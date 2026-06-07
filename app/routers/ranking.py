@@ -2,28 +2,24 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.core.firebase import db
 from app.core.auth import get_current_user
 from app.models.ranking import RankingEntry
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 router = APIRouter(prefix="/ranking", tags=["Ranking"])
 
 
 @router.get("/", response_model=list[RankingEntry])
 async def get_ranking(current_user: dict = Depends(get_current_user)):
-    """
-    Devuelve la tabla de posiciones completa ordenada por puntos.
-    En caso de empate desempata por resultados exactos.
-    """
     users_docs = db.collection("users")\
-        .where("role", "==", "player")\
+        .where(filter=FieldFilter("role", "==", "player"))\
         .stream()
 
     players = []
     for doc in users_docs:
         user = doc.to_dict()
 
-        # Calculamos correct_winners y accuracy desde las predicciones
         preds = db.collection("predictions")\
-            .where("uid", "==", user["uid"])\
-            .where("processed", "==", True)\
+            .where(filter=FieldFilter("uid", "==", user["uid"]))\
+            .where(filter=FieldFilter("processed", "==", True))\
             .stream()
 
         processed_preds = [p.to_dict() for p in preds]
@@ -43,14 +39,12 @@ async def get_ranking(current_user: dict = Depends(get_current_user)):
             "accuracy": accuracy,
         })
 
-    # Ordenar: primero por puntos, luego por exactos, luego por % acierto
     players.sort(key=lambda x: (
         -x["total_score"],
         -x["exact_results"],
         -x["accuracy"]
     ))
 
-    # Asignar posición
     return [
         RankingEntry(position=i + 1, **player)
         for i, player in enumerate(players)
@@ -59,9 +53,6 @@ async def get_ranking(current_user: dict = Depends(get_current_user)):
 
 @router.get("/me")
 async def get_my_position(current_user: dict = Depends(get_current_user)):
-    """
-    Devuelve la posición del usuario autenticado en el ranking.
-    """
     ranking = await get_ranking(current_user)
 
     my_entry = next(
@@ -79,11 +70,7 @@ async def get_my_position(current_user: dict = Depends(get_current_user)):
 
 
 @router.get("/top/{n}")
-async def get_top_n(
-    n: int,
-    current_user: dict = Depends(get_current_user)
-):
-    """Devuelve el top N jugadores. Útil para widgets del dashboard."""
+async def get_top_n(n: int, current_user: dict = Depends(get_current_user)):
     if n < 1 or n > 50:
         raise HTTPException(status_code=400, detail="N debe estar entre 1 y 50")
 

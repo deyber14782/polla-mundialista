@@ -1,8 +1,8 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.triggers.cron import CronTrigger
 from app.services.matches_service import update_live_matches
 from app.core.firebase import db
+from google.cloud.firestore_v1.base_query import FieldFilter
 import logging
 
 logger = logging.getLogger(__name__)
@@ -11,10 +11,6 @@ scheduler = AsyncIOScheduler()
 
 
 async def sync_live_matches():
-    """
-    Consulta la API de fútbol y actualiza los partidos en vivo.
-    Solo ejecuta si hay partidos activos para no gastar requests.
-    """
     try:
         live_statuses = ["1H", "HT", "2H"]
         live_docs = db.collection("matches").stream()
@@ -35,44 +31,35 @@ async def sync_live_matches():
 
 async def lock_started_matches():
     """
-    Marca como bloqueadas las predicciones de partidos que ya comenzaron.
-    Corre cada minuto para ser preciso con el horario de inicio.
+    Bloquea todas las predicciones pendientes cuando
+    arranca el primer partido del Mundial.
     """
     try:
         from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
+        from app.services.predictions_service import WORLD_CUP_START
 
-        # Partidos que aún están como NS pero ya deberían haber empezado
-        matches_docs = db.collection("matches")\
-            .where("status", "==", "NS")\
+        now = datetime.now(timezone.utc)
+        if now < WORLD_CUP_START:
+            return  # Aún no es hora
+
+        # Bloquear todas las predicciones que sigan en pending
+        preds = db.collection("predictions")\
+            .where(filter=FieldFilter("status", "==", "pending"))\
             .stream()
 
         count = 0
-        for doc in matches_docs:
-            match = doc.to_dict()
-            kickoff = match.get("kickoff", "")
-            if kickoff and kickoff <= now:
-                # Actualizamos predicciones a locked
-                preds = db.collection("predictions")\
-                    .where("fixture_id", "==", match["fixture_id"])\
-                    .where("status", "==", "pending")\
-                    .stream()
-
-                for pred in preds:
-                    pred.reference.update({"status": "locked"})
-                    count += 1
+        for pred in preds:
+            pred.reference.update({"status": "locked"})
+            count += 1
 
         if count:
-            logger.info(f"Lock: {count} predicciones bloqueadas")
+            logger.info(f"Lock total: {count} predicciones bloqueadas")
 
     except Exception as e:
         logger.error(f"Error en lock_started_matches: {e}")
 
 
 def start_scheduler():
-    """Registra todos los jobs y arranca el scheduler."""
-
-    # Sync de partidos en vivo cada 5 minutos
     scheduler.add_job(
         sync_live_matches,
         trigger=IntervalTrigger(minutes=5),
@@ -81,7 +68,6 @@ def start_scheduler():
         replace_existing=True,
     )
 
-    # Bloqueo de predicciones cada minuto
     scheduler.add_job(
         lock_started_matches,
         trigger=IntervalTrigger(minutes=1),

@@ -8,14 +8,17 @@ security = HTTPBearer()
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
-        decoded_token = auth.verify_id_token(token)
+        decoded_token = auth.verify_id_token(token, clock_skew_seconds=10)
         uid = decoded_token["uid"]
 
         user_ref = db.collection("users").document(uid)
         user_doc = user_ref.get()
 
         if not user_doc.exists:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Usuario no encontrado en Firestore"
+            )
 
         return {"uid": uid, **user_doc.to_dict()}
 
@@ -28,7 +31,6 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 
 
 async def require_admin(current_user: dict = Depends(get_current_user)):
-    """Dependencia que verifica que el usuario autenticado sea admin."""
     if current_user.get("role") != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
