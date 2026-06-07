@@ -10,7 +10,7 @@ from app.core.config import settings
 router = APIRouter(prefix="/matches", tags=["Matches"])
 
 
-@router.get("/")
+@router.get("")
 async def get_all_matches(
     phase: str = None,
     current_user: dict = Depends(get_current_user)
