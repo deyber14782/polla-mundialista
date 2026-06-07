@@ -26,8 +26,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://polla-mundialista-393f8.web.app",
-        "https://polla-mundialista-393f8.firebaseapp.com",
+        "https://pollaalgorithmicsfunzamosquera.web.app",
+        "https://pollaalgorithmicsfunzamosquera.firebaseapp.com",
         "http://127.0.0.1:5500",
         "http://localhost:5500",
     ],
