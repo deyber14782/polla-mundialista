@@ -137,7 +137,11 @@ def _tbd_team(slot: str) -> dict:
     }
 
 
-def _get_winner_from_prediction(prev_fixture_id: int, bracket: dict, predictions: dict) -> dict:
+def _get_winner_from_prediction(
+    prev_fixture_id: int,
+    bracket: dict,
+    predictions: dict
+) -> dict:
     prev_match = bracket.get(prev_fixture_id)
     if not prev_match:
         return _tbd_team(f"W{prev_fixture_id}")
@@ -149,10 +153,17 @@ def _get_winner_from_prediction(prev_fixture_id: int, bracket: dict, predictions
     hg = pred.get("predicted_home", 0)
     ag = pred.get("predicted_away", 0)
 
-    if hg >= ag:
+    if hg > ag:
         return prev_match["home_team"]
-    else:
+    elif hg < ag:
         return prev_match["away_team"]
+    else:
+        # Empate — usar penalty_winner
+        penalty_winner = pred.get("penalty_winner", "home")
+        if penalty_winner == "home":
+            return prev_match["home_team"]
+        else:
+            return prev_match["away_team"]
 
 
 def _get_loser_from_prediction(prev_fixture_id: int, bracket: dict, predictions: dict) -> dict:

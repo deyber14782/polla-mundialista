@@ -8,9 +8,10 @@ class PredictionStatus(str, Enum):
     processed = "processed"
 
 class PredictionCreate(BaseModel):
-    fixture_id:     int
-    predicted_home: int
-    predicted_away: int
+    fixture_id:      int
+    predicted_home:  int
+    predicted_away:  int
+    penalty_winner:  Optional[str] = None  # "home" o "away", solo en empates de eliminatorias
 
 class PredictionUpdate(BaseModel):
     predicted_home: int

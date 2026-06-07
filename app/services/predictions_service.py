@@ -17,6 +17,7 @@ def is_match_locked(kickoff: str) -> bool:
     return now >= WORLD_CUP_START
 
 
+# En enrich_prediction agrega
 def enrich_prediction(pred: dict, match: dict) -> dict:
     return {
         **pred,
@@ -28,6 +29,7 @@ def enrich_prediction(pred: dict, match: dict) -> dict:
         "phase":          match["phase"],
         "real_home":      match["score"]["home"],
         "real_away":      match["score"]["away"],
+        "penalty_winner": pred.get("penalty_winner"),  # ← agrega esto
     }
 
 

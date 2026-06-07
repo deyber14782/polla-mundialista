@@ -194,6 +194,7 @@ async def create_batch_predictions(
             "fixture_id": data.fixture_id,
             "predicted_home": data.predicted_home,
             "predicted_away": data.predicted_away,
+            "penalty_winner": data.penalty_winner,
             "points": None,
             "status": PredictionStatus.pending,
             "processed": False,
