@@ -10,6 +10,7 @@ from app.services.predictions_service import (
     enrich_prediction, get_user_predictions_with_matches,
     get_match_predictions_public
 )
+from app.models.special_prediction import TopScorerPrediction, TopScorerResponse
 
 router = APIRouter(prefix="/predictions", tags=["Predictions"])
 
@@ -207,3 +208,30 @@ async def create_batch_predictions(
         "skipped": len(skipped),
         "skipped_detail": skipped,
     }
+
+@router.post("/top-scorer", status_code=status.HTTP_201_CREATED)
+async def save_top_scorer(
+    data: TopScorerPrediction,
+    current_user: dict = Depends(get_current_user)
+):
+    """Guarda la predicción del máximo goleador."""
+    uid = current_user["uid"]
+    doc_ref = db.collection("special_predictions").document(uid)
+    doc_ref.set({
+        "uid":         uid,
+        "player_name": data.player_name,
+        "team_name":   data.team_name,
+        "points":      None,
+        "processed":   False,
+    }, merge=True)
+    return {"message": "Predicción guardada", "player_name": data.player_name}
+
+
+@router.get("/top-scorer/me")
+async def get_my_top_scorer(current_user: dict = Depends(get_current_user)):
+    """Devuelve la predicción del máximo goleador del usuario."""
+    uid = current_user["uid"]
+    doc = db.collection("special_predictions").document(uid).get()
+    if not doc.exists:
+        return {"player_name": "", "team_name": ""}
+    return doc.to_dict()
