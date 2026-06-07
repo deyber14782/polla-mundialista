@@ -19,7 +19,8 @@ app = FastAPI(
     title="Polla Mundialista API",
     description="Backend para la plataforma de predicciones del Mundial 2026",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    redirect_slashes=False
 )
 
 app.add_middleware(
