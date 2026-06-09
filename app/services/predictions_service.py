@@ -9,15 +9,10 @@ def get_prediction_id(uid: str, fixture_id: int) -> str:
 
 
 def is_match_locked(kickoff: str) -> bool:
-    """
-    Las predicciones se bloquean cuando empieza el primer partido
-    del Mundial, sin importar el kickoff individual de cada partido.
-    """
     now = datetime.now(timezone.utc)
     return now >= WORLD_CUP_START
 
 
-# En enrich_prediction agrega
 def enrich_prediction(pred: dict, match: dict) -> dict:
     return {
         **pred,
@@ -29,33 +24,38 @@ def enrich_prediction(pred: dict, match: dict) -> dict:
         "phase":          match["phase"],
         "real_home":      match["score"]["home"],
         "real_away":      match["score"]["away"],
-        "penalty_winner": pred.get("penalty_winner"),  # ← agrega esto
+        "penalty_winner": pred.get("penalty_winner"),
     }
 
 
 async def get_user_predictions_with_matches(uid: str) -> list[dict]:
+    # Usar matches cacheados en vez de leer 1 por 1
+    from app.routers.matches import get_matches_dict_cached
+    matches_dict = get_matches_dict_cached()
+
     predictions_docs = db.collection("predictions")\
         .where(filter=FieldFilter("uid", "==", uid))\
         .stream()
 
     result = []
     for doc in predictions_docs:
-        pred      = doc.to_dict()
-        match_doc = db.collection("matches")\
-            .document(str(pred["fixture_id"])).get()
-        if match_doc.exists:
-            result.append(enrich_prediction(pred, match_doc.to_dict()))
+        pred = doc.to_dict()
+        match = matches_dict.get(pred["fixture_id"])
+        if match:
+            result.append(enrich_prediction(pred, match))
 
     result.sort(key=lambda x: x.get("kickoff", ""))
     return result
 
 
 async def get_match_predictions_public(fixture_id: int) -> list[dict]:
-    match_doc = db.collection("matches").document(str(fixture_id)).get()
-    if not match_doc.exists:
+    from app.routers.matches import get_matches_dict_cached
+    matches_dict = get_matches_dict_cached()
+
+    match = matches_dict.get(fixture_id)
+    if not match:
         return []
 
-    match = match_doc.to_dict()
     if not is_match_locked(match["kickoff"]):
         return []
 
@@ -65,7 +65,7 @@ async def get_match_predictions_public(fixture_id: int) -> list[dict]:
 
     result = []
     for doc in predictions_docs:
-        pred     = doc.to_dict()
+        pred = doc.to_dict()
         user_doc = db.collection("users").document(pred["uid"]).get()
         if user_doc.exists:
             user = user_doc.to_dict()

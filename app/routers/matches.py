@@ -4,11 +4,35 @@ from app.core.auth import get_current_user, require_admin
 from app.services.matches_service import seed_matches_from_api
 from app.services.football_api import get_world_cup_league_id
 from google.cloud.firestore_v1.base_query import FieldFilter
+from app.core import cache
 import httpx
 from app.core.config import settings
-import time
 
 router = APIRouter(prefix="/matches", tags=["Matches"])
+
+
+def _get_all_matches_cached():
+    """Lee matches de caché o Firestore. Cachea 5 min."""
+    cached = cache.get("all_matches")
+    if cached is not None:
+        return cached
+
+    docs = db.collection("matches").order_by("kickoff").stream()
+    matches = [doc.to_dict() for doc in docs]
+    cache.set("all_matches", matches, ttl=300)
+    return matches
+
+
+def get_matches_dict_cached() -> dict:
+    """Devuelve {fixture_id: match_dict} — usado por otros módulos."""
+    cached = cache.get("matches_dict")
+    if cached is not None:
+        return cached
+
+    all_matches = _get_all_matches_cached()
+    matches_dict = {m["fixture_id"]: m for m in all_matches}
+    cache.set("matches_dict", matches_dict, ttl=300)
+    return matches_dict
 
 
 @router.get("")
@@ -16,27 +40,10 @@ async def get_all_matches(
     phase: str = None,
     current_user: dict = Depends(get_current_user)
 ):
-    t0 = time.time()
-
-    query = db.collection("matches")
+    matches = _get_all_matches_cached()
 
     if phase:
-        query = query.where(filter=FieldFilter("phase", "==", phase))
-
-    t1 = time.time()
-
-    docs = query.order_by("kickoff").stream()
-
-    t2 = time.time()
-
-    matches = [doc.to_dict() for doc in docs]
-
-    t3 = time.time()
-
-    print("Construcción query:", round(t1 - t0, 2))
-    print("Stream:", round(t2 - t1, 2))
-    print("Lectura documentos:", round(t3 - t2, 2))
-    print("Total:", round(t3 - t0, 2))
+        matches = [m for m in matches if m.get("phase") == phase]
 
     return {"matches": matches}
 
@@ -44,6 +51,7 @@ async def get_all_matches(
 @router.post("/seed")
 async def seed_matches(current_user: dict = Depends(require_admin)):
     result = await seed_matches_from_api()
+    cache.invalidate("all_matches", "matches_dict")
     return result
 
 
@@ -83,32 +91,24 @@ async def search_leagues(
 
 @router.get("/bracket/me")
 async def get_my_bracket(current_user: dict = Depends(get_current_user)):
-    """
-    Devuelve el cuadro eliminatorio proyectado
-    basado en las predicciones de grupos del usuario.
-    """
     from app.services.bracket_service import project_bracket_for_user
 
     uid = current_user["uid"]
+    matches_dict = get_matches_dict_cached()
 
-    # Verificar predicciones de grupos
-    group_preds_docs = db.collection("predictions")\
+    # Leer predicciones del usuario (1 sola query)
+    predictions_docs = db.collection("predictions")\
         .where(filter=FieldFilter("uid", "==", uid))\
         .stream()
 
-    group_matches_docs = db.collection("matches")\
-        .where(filter=FieldFilter("phase", "==", "group"))\
-        .stream()
-
-    total_group_matches = len(list(group_matches_docs))
-
     user_group_preds = 0
-    for p in group_preds_docs:
+    for p in predictions_docs:
         pred = p.to_dict()
-        match_doc = db.collection("matches")\
-            .document(str(pred["fixture_id"])).get()
-        if match_doc.exists and match_doc.to_dict().get("phase") == "group":
+        match = matches_dict.get(pred["fixture_id"])
+        if match and match.get("phase") == "group":
             user_group_preds += 1
+
+    total_group_matches = len([m for m in matches_dict.values() if m.get("phase") == "group"])
 
     if user_group_preds < total_group_matches:
         raise HTTPException(
@@ -121,10 +121,10 @@ async def get_my_bracket(current_user: dict = Depends(get_current_user)):
     return result
 
 
-# ── Ruta con parámetro SIEMPRE AL FINAL ──────────────────────────
 @router.get("/{fixture_id}")
 async def get_match(fixture_id: int, current_user: dict = Depends(get_current_user)):
-    doc = db.collection("matches").document(str(fixture_id)).get()
-    if not doc.exists:
+    matches_dict = get_matches_dict_cached()
+    match = matches_dict.get(fixture_id)
+    if not match:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
-    return doc.to_dict()
+    return match
