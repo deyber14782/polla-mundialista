@@ -6,6 +6,7 @@ from app.services.football_api import get_world_cup_league_id
 from google.cloud.firestore_v1.base_query import FieldFilter
 import httpx
 from app.core.config import settings
+import time
 
 router = APIRouter(prefix="/matches", tags=["Matches"])
 
@@ -15,25 +16,29 @@ async def get_all_matches(
     phase: str = None,
     current_user: dict = Depends(get_current_user)
 ):
+    t0 = time.time()
+
     query = db.collection("matches")
+
     if phase:
         query = query.where(filter=FieldFilter("phase", "==", phase))
+
+    t1 = time.time()
+
     docs = query.order_by("kickoff").stream()
+
+    t2 = time.time()
+
     matches = [doc.to_dict() for doc in docs]
-    if not matches:
-        raise HTTPException(status_code=404, detail="No se encontraron partidos")
-    return {"matches": matches, "total": len(matches)}
 
+    t3 = time.time()
 
-@router.get("/live")
-async def get_live_matches(current_user: dict = Depends(get_current_user)):
-    live_statuses = ["1H", "HT", "2H"]
-    docs = db.collection("matches").stream()
-    live = [
-        doc.to_dict() for doc in docs
-        if doc.to_dict().get("status") in live_statuses
-    ]
-    return {"matches": live, "total": len(live)}
+    print("Construcción query:", round(t1 - t0, 2))
+    print("Stream:", round(t2 - t1, 2))
+    print("Lectura documentos:", round(t3 - t2, 2))
+    print("Total:", round(t3 - t0, 2))
+
+    return {"matches": matches}
 
 
 @router.post("/seed")
