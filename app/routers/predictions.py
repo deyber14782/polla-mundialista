@@ -11,6 +11,7 @@ from app.services.predictions_service import (
     get_match_predictions_public
 )
 from app.models.special_prediction import TopScorerPrediction, TopScorerResponse
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 router = APIRouter(prefix="/predictions", tags=["Predictions"])
 
@@ -20,27 +21,20 @@ async def create_prediction(
     data: PredictionCreate,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Crea una predicción para un partido.
-    Solo permitido si el partido no ha comenzado.
-    """
     uid = current_user["uid"]
 
-    # Verificar que el partido existe
     match_doc = db.collection("matches").document(str(data.fixture_id)).get()
     if not match_doc.exists:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
 
     match = match_doc.to_dict()
 
-    # Verificar que el partido no ha comenzado
     if is_match_locked(match["kickoff"]):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="El partido ya comenzó, no puedes predecir"
         )
 
-    # Verificar que no existe ya una predicción para este partido
     pred_id = get_prediction_id(uid, data.fixture_id)
     existing = db.collection("predictions").document(pred_id).get()
     if existing.exists:
@@ -61,6 +55,10 @@ async def create_prediction(
     }
 
     db.collection("predictions").document(pred_id).set(new_prediction)
+
+    # Actualizar predictions_count del usuario
+    _update_user_predictions_count(uid)
+
     return enrich_prediction(new_prediction, match)
 
 
@@ -70,19 +68,13 @@ async def update_prediction(
     data: PredictionUpdate,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Edita una predicción existente.
-    Solo permitido si el partido no ha comenzado.
-    """
     uid = current_user["uid"]
     pred_id = get_prediction_id(uid, fixture_id)
 
-    # Verificar que la predicción existe
     pred_doc = db.collection("predictions").document(pred_id).get()
     if not pred_doc.exists:
         raise HTTPException(status_code=404, detail="Predicción no encontrada")
 
-    # Verificar que el partido no ha comenzado
     match_doc = db.collection("matches").document(str(fixture_id)).get()
     if not match_doc.exists:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
@@ -105,10 +97,6 @@ async def update_prediction(
 
 @router.get("/me")
 async def get_my_predictions(current_user: dict = Depends(get_current_user)):
-    """
-    Devuelve todas las predicciones del usuario autenticado
-    enriquecidas con info de cada partido.
-    """
     uid = current_user["uid"]
     predictions = await get_user_predictions_with_matches(uid)
     return {"predictions": predictions, "total": len(predictions)}
@@ -116,7 +104,6 @@ async def get_my_predictions(current_user: dict = Depends(get_current_user)):
 
 @router.get("/me/stats")
 async def get_my_stats(current_user: dict = Depends(get_current_user)):
-    """Devuelve estadísticas personales del usuario."""
     uid = current_user["uid"]
     predictions = await get_user_predictions_with_matches(uid)
 
@@ -141,10 +128,6 @@ async def get_match_predictions(
     fixture_id: int,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Devuelve las predicciones de todos los usuarios para un partido.
-    Solo disponible después de que el partido haya comenzado.
-    """
     match_doc = db.collection("matches").document(str(fixture_id)).get()
     if not match_doc.exists:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
@@ -168,11 +151,6 @@ async def create_batch_predictions(
     predictions: list[PredictionCreate],
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Crea o actualiza múltiples predicciones de una sola vez.
-    Ideal para que el usuario prediga todo el Mundial de un tirón.
-    Omite silenciosamente los partidos que ya comenzaron.
-    """
     uid = current_user["uid"]
     saved = []
     skipped = []
@@ -203,18 +181,22 @@ async def create_batch_predictions(
         db.collection("predictions").document(pred_id).set(prediction)
         saved.append(data.fixture_id)
 
+    # Actualizar predictions_count del usuario después del batch
+    if saved:
+        _update_user_predictions_count(uid)
+
     return {
         "saved": len(saved),
         "skipped": len(skipped),
         "skipped_detail": skipped,
     }
 
+
 @router.post("/top-scorer", status_code=status.HTTP_201_CREATED)
 async def save_top_scorer(
     data: TopScorerPrediction,
     current_user: dict = Depends(get_current_user)
 ):
-    """Guarda la predicción del máximo goleador."""
     uid = current_user["uid"]
     doc_ref = db.collection("special_predictions").document(uid)
     doc_ref.set({
@@ -229,9 +211,17 @@ async def save_top_scorer(
 
 @router.get("/top-scorer/me")
 async def get_my_top_scorer(current_user: dict = Depends(get_current_user)):
-    """Devuelve la predicción del máximo goleador del usuario."""
     uid = current_user["uid"]
     doc = db.collection("special_predictions").document(uid).get()
     if not doc.exists:
         return {"player_name": "", "team_name": ""}
     return doc.to_dict()
+
+
+def _update_user_predictions_count(uid: str):
+    """Cuenta las predicciones reales del usuario y actualiza el campo."""
+    preds = db.collection("predictions")\
+        .where(filter=FieldFilter("uid", "==", uid))\
+        .stream()
+    count = sum(1 for _ in preds)
+    db.collection("users").document(uid).update({"predictions_count": count})
