@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from app.core.firebase import db
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-WORLD_CUP_START = datetime(2026, 6, 11, 11, 0, 0, tzinfo=timezone.utc)  # 6am Colombia
+WORLD_CUP_START = datetime(2026, 6, 18, 11, 0, 0, tzinfo=timezone.utc)
 
 def get_prediction_id(uid: str, fixture_id: int) -> str:
     return f"{uid}_{fixture_id}"

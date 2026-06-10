@@ -178,6 +178,11 @@ async def create_batch_predictions(
             "status": PredictionStatus.pending,
             "processed": False,
         }
+        # Si el partido ya terminó, marcar como procesado con 0 puntos
+        if match.get("status") == "FT":
+            prediction["processed"] = True
+            prediction["points"] = 0
+
         db.collection("predictions").document(pred_id).set(prediction)
         saved.append(data.fixture_id)
 
