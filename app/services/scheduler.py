@@ -12,18 +12,40 @@ scheduler = AsyncIOScheduler()
 
 async def sync_live_matches():
     try:
-        live_statuses = ["1H", "HT", "2H"]
-        live_docs = db.collection("matches").stream()
-        has_live = any(
-            doc.to_dict().get("status") in live_statuses
-            for doc in live_docs
-        )
+        from datetime import datetime, timezone
 
-        if has_live:
+        now = datetime.now(timezone.utc)
+
+        # Buscar partidos que YA deberían haber empezado pero siguen en NS
+        # O que están en vivo
+        all_docs = db.collection("matches").stream()
+        should_check = False
+
+        for doc in all_docs:
+            m = doc.to_dict()
+            status = m.get("status", "NS")
+            kickoff = m.get("kickoff", "")
+
+            # Si hay partidos en vivo, obvio hay que actualizar
+            if status in ["1H", "HT", "2H"]:
+                should_check = True
+                break
+
+            # Si el kickoff ya pasó pero sigue en NS, hay que actualizar
+            if status == "NS" and kickoff:
+                try:
+                    ko_time = datetime.fromisoformat(kickoff.replace("Z", "+00:00"))
+                    if now > ko_time:
+                        should_check = True
+                        break
+                except:
+                    pass
+
+        if should_check:
             result = await update_live_matches()
-            logger.info(f"Sync live: {result['updated']} partidos actualizados")
+            logger.info(f"Sync: {result['updated']} partidos actualizados")
         else:
-            logger.info("Sync live: no hay partidos en vivo")
+            logger.info("Sync: no hay partidos por actualizar")
 
     except Exception as e:
         logger.error(f"Error en sync_live_matches: {e}")

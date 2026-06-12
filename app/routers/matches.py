@@ -7,6 +7,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from app.core import cache
 import httpx
 from app.core.config import settings
+from app.core import cache
 
 router = APIRouter(prefix="/matches", tags=["Matches"])
 
@@ -128,3 +129,37 @@ async def get_match(fixture_id: int, current_user: dict = Depends(get_current_us
     if not match:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
     return match
+
+@router.post("/admin/force-sync")
+async def force_sync(current_user: dict = Depends(require_admin)):
+    """Forzar actualización de todos los partidos desde la API."""
+    from app.services.football_api import get_world_cup_fixtures
+    from app.services.matches_service import parse_fixture, calculate_points_for_match
+
+    fixtures = await get_world_cup_fixtures()
+    updated = 0
+    points_calculated = 0
+
+    for fixture_data in fixtures:
+        parsed = parse_fixture(fixture_data)
+        doc_ref = db.collection("matches").document(str(parsed["fixture_id"]))
+        doc = doc_ref.get()
+        if doc.exists:
+            doc_ref.update({
+                "status": parsed["status"],
+                "score": parsed["score"],
+            })
+            updated += 1
+
+            # Si el partido terminó, calcular puntos
+            if parsed["status"] == "FT" and parsed["score"]["home"] is not None:
+                await calculate_points_for_match(parsed["fixture_id"])
+                points_calculated += 1
+
+    cache.invalidate("all_matches", "matches_dict", "ranking")
+
+    return {
+        "updated": updated,
+        "points_calculated": points_calculated,
+        "total_fixtures_from_api": len(fixtures),
+    }
