@@ -254,3 +254,24 @@ async def debug_api(current_user: dict = Depends(require_admin)):
         results["test4_account"] = r4.json().get("response", {})
     
     return results
+
+@router.get("/admin/debug-names")
+async def debug_names(current_user: dict = Depends(require_admin)):
+    from app.services.football_api import get_world_cup_fixtures
+    from app.services.matches_service import parse_fixture
+    
+    fixtures = await get_world_cup_fixtures()
+    return {
+        "total": len(fixtures),
+        "matches": [
+            {
+                "home": parse_fixture(f)["home_team"]["name"],
+                "away": parse_fixture(f)["away_team"]["name"],
+                "date": parse_fixture(f)["kickoff"][:10],
+                "status": parse_fixture(f)["status"],
+                "score_home": parse_fixture(f)["score"]["home"],
+                "score_away": parse_fixture(f)["score"]["away"],
+            }
+            for f in fixtures
+        ]
+    }
