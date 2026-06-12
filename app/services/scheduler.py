@@ -15,9 +15,6 @@ async def sync_live_matches():
         from datetime import datetime, timezone
 
         now = datetime.now(timezone.utc)
-
-        # Buscar partidos que YA deberían haber empezado pero siguen en NS
-        # O que están en vivo
         all_docs = db.collection("matches").stream()
         should_check = False
 
@@ -26,12 +23,10 @@ async def sync_live_matches():
             status = m.get("status", "NS")
             kickoff = m.get("kickoff", "")
 
-            # Si hay partidos en vivo, obvio hay que actualizar
             if status in ["1H", "HT", "2H"]:
                 should_check = True
                 break
 
-            # Si el kickoff ya pasó pero sigue en NS, hay que actualizar
             if status == "NS" and kickoff:
                 try:
                     ko_time = datetime.fromisoformat(kickoff.replace("Z", "+00:00"))
@@ -42,8 +37,56 @@ async def sync_live_matches():
                     pass
 
         if should_check:
-            result = await update_live_matches()
-            logger.info(f"Sync: {result['updated']} partidos actualizados")
+            # Usar la misma lógica de force-sync con mapeo de nombres
+            from app.services.football_api import get_world_cup_fixtures
+            from app.services.matches_service import parse_fixture, calculate_points_for_match
+            from app.core import cache
+
+            NAME_MAP = {
+                "méxico": "mexico", "sudáfrica": "south africa",
+                "corea del sur": "south korea", "chequia": "czech republic",
+                "canadá": "canada", "bosnia-herzegovina": "bosnia & herzegovina",
+                "catar": "qatar", "suiza": "switzerland", "brasil": "brazil",
+                "haití": "haiti", "escocia": "scotland", "marruecos": "morocco",
+                "estados unidos": "usa", "turquía": "turkey", "alemania": "germany",
+                "curazao": "curacao", "costa de marfil": "ivory coast",
+                "países bajos": "netherlands", "japón": "japan", "suecia": "sweden",
+                "túnez": "tunisia", "bélgica": "belgium", "egipto": "egypt",
+                "irán": "iran", "nueva zelanda": "new zealand", "españa": "spain",
+                "cabo verde": "cape verde", "arabia saudita": "saudi arabia",
+                "francia": "france", "senegal": "senegal", "irak": "iraq",
+                "noruega": "norway", "argentina": "argentina", "argelia": "algeria",
+                "austria": "austria", "jordania": "jordan", "portugal": "portugal",
+                "rd congo": "dr congo", "uzbekistán": "uzbekistan",
+                "colombia": "colombia", "inglaterra": "england", "croacia": "croatia",
+                "ghana": "ghana", "panamá": "panama", "ecuador": "ecuador",
+                "uruguay": "uruguay",
+            }
+            def normalize(name):
+                return NAME_MAP.get(name.lower().strip(), name.lower().strip())
+
+            fixtures = await get_world_cup_fixtures()
+            if fixtures:
+                api_lookup = {}
+                for f in fixtures:
+                    p = parse_fixture(f)
+                    h = p["home_team"]["name"].lower().strip()
+                    a = p["away_team"]["name"].lower().strip()
+                    api_lookup[(h, a, p["kickoff"][:10])] = p
+
+                for doc in db.collection("matches").stream():
+                    m = doc.to_dict()
+                    h = normalize(m["home_team"]["name"])
+                    a = normalize(m["away_team"]["name"])
+                    api_match = api_lookup.get((h, a, m["kickoff"][:10])) or api_lookup.get((a, h, m["kickoff"][:10]))
+                    if not api_match:
+                        continue
+                    doc.reference.update({"status": api_match["status"], "score": api_match["score"]})
+                    if api_match["status"] == "FT" and api_match["score"]["home"] is not None:
+                        await calculate_points_for_match(int(m["fixture_id"]))
+
+                cache.invalidate("all_matches", "matches_dict", "ranking")
+                logger.info(f"Sync completado con {len(fixtures)} fixtures de la API")
         else:
             logger.info("Sync: no hay partidos por actualizar")
 
