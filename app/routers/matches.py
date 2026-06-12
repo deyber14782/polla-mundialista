@@ -132,27 +132,75 @@ async def get_match(fixture_id: int, current_user: dict = Depends(get_current_us
 
 @router.post("/admin/force-sync")
 async def force_sync(current_user: dict = Depends(require_admin)):
-    """Sincroniza partidos matcheando por equipos + fecha."""
     from app.services.football_api import get_world_cup_fixtures
     from app.services.matches_service import parse_fixture, calculate_points_for_match
-    from datetime import datetime
 
-    # Traer todos los fixtures reales de la API
+    # Mapeo español (Firestore) → inglés (API)
+    NAME_MAP = {
+        "méxico": "mexico",
+        "sudáfrica": "south africa",
+        "corea del sur": "south korea",
+        "chequia": "czech republic",
+        "canadá": "canada",
+        "bosnia-herzegovina": "bosnia & herzegovina",
+        "catar": "qatar",
+        "suiza": "switzerland",
+        "brasil": "brazil",
+        "haití": "haiti",
+        "escocia": "scotland",
+        "marruecos": "morocco",
+        "estados unidos": "usa",
+        "turquía": "turkey",
+        "alemania": "germany",
+        "curazao": "curacao",
+        "costa de marfil": "ivory coast",
+        "países bajos": "netherlands",
+        "japón": "japan",
+        "suecia": "sweden",
+        "túnez": "tunisia",
+        "bélgica": "belgium",
+        "egipto": "egypt",
+        "irán": "iran",
+        "nueva zelanda": "new zealand",
+        "españa": "spain",
+        "cabo verde": "cape verde",
+        "arabia saudita": "saudi arabia",
+        "francia": "france",
+        "senegal": "senegal",
+        "irak": "iraq",
+        "noruega": "norway",
+        "argentina": "argentina",
+        "argelia": "algeria",
+        "austria": "austria",
+        "jordania": "jordan",
+        "portugal": "portugal",
+        "rd congo": "dr congo",
+        "uzbekistán": "uzbekistan",
+        "colombia": "colombia",
+        "inglaterra": "england",
+        "croacia": "croatia",
+        "ghana": "ghana",
+        "panamá": "panama",
+        "ecuador": "ecuador",
+        "uruguay": "uruguay",
+    }
+
+    def normalize(name):
+        n = name.lower().strip()
+        return NAME_MAP.get(n, n)
+
     fixtures = await get_world_cup_fixtures()
     if not fixtures:
         return {"error": "La API no devolvió fixtures", "updated": 0}
 
-    # Construir lookup de la API: (home_name_lower, away_name_lower, date) -> parsed
     api_lookup = {}
     for f in fixtures:
         parsed = parse_fixture(f)
         home = parsed["home_team"]["name"].lower().strip()
         away = parsed["away_team"]["name"].lower().strip()
-        # Solo fecha (sin hora) para matchear más flexible
-        ko_date = parsed["kickoff"][:10]  # "2026-06-11"
+        ko_date = parsed["kickoff"][:10]
         api_lookup[(home, away, ko_date)] = parsed
 
-    # Leer partidos de Firestore y matchear
     all_docs = list(db.collection("matches").stream())
     updated = 0
     points_calculated = 0
@@ -160,13 +208,12 @@ async def force_sync(current_user: dict = Depends(require_admin)):
 
     for doc in all_docs:
         m = doc.to_dict()
-        home = m["home_team"]["name"].lower().strip()
-        away = m["away_team"]["name"].lower().strip()
+        home = normalize(m["home_team"]["name"])
+        away = normalize(m["away_team"]["name"])
         ko_date = m["kickoff"][:10]
 
         api_match = api_lookup.get((home, away, ko_date))
         if not api_match:
-            # Intentar invertido por si acaso
             api_match = api_lookup.get((away, home, ko_date))
 
         if not api_match:
@@ -174,15 +221,12 @@ async def force_sync(current_user: dict = Depends(require_admin)):
                 not_found.append(f"{m['home_team']['name']} vs {m['away_team']['name']} ({ko_date})")
             continue
 
-        # Actualizar status y score
-        update_data = {
+        doc.reference.update({
             "status": api_match["status"],
             "score": api_match["score"],
-        }
-        doc.reference.update(update_data)
+        })
         updated += 1
 
-        # Si terminó, calcular puntos
         if api_match["status"] == "FT" and api_match["score"]["home"] is not None:
             await calculate_points_for_match(int(m["fixture_id"]))
             points_calculated += 1
