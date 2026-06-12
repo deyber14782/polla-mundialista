@@ -195,3 +195,62 @@ async def force_sync(current_user: dict = Depends(require_admin)):
         "points_calculated": points_calculated,
         "not_matched": not_found[:20],
     }
+
+@router.get("/admin/debug-api")
+async def debug_api(current_user: dict = Depends(require_admin)):
+    import httpx
+    from app.core.config import settings
+    
+    results = {}
+    
+    async with httpx.AsyncClient() as client:
+        # Test 1: fixtures con league=1, season=2026
+        r1 = await client.get(
+            "https://v3.football.api-sports.io/fixtures",
+            headers={"x-apisports-key": settings.API_FOOTBALL_KEY},
+            params={"league": 1, "season": 2026},
+            timeout=15.0
+        )
+        d1 = r1.json()
+        results["test1_league1_2026"] = {
+            "results": d1.get("results", 0),
+            "errors": d1.get("errors", {}),
+            "first": d1.get("response", [])[:1]
+        }
+        
+        # Test 2: fixtures en vivo del mundial
+        r2 = await client.get(
+            "https://v3.football.api-sports.io/fixtures",
+            headers={"x-apisports-key": settings.API_FOOTBALL_KEY},
+            params={"league": 1, "season": 2026, "status": "FT"},
+            timeout=15.0
+        )
+        d2 = r2.json()
+        results["test2_finished"] = {
+            "results": d2.get("results", 0),
+            "errors": d2.get("errors", {}),
+        }
+        
+        # Test 3: fixtures de hoy
+        from datetime import date
+        r3 = await client.get(
+            "https://v3.football.api-sports.io/fixtures",
+            headers={"x-apisports-key": settings.API_FOOTBALL_KEY},
+            params={"date": str(date.today())},
+            timeout=15.0
+        )
+        d3 = r3.json()
+        results["test3_today"] = {
+            "results": d3.get("results", 0),
+            "errors": d3.get("errors", {}),
+        }
+        
+        # Test 4: status de la cuenta
+        r4 = await client.get(
+            "https://v3.football.api-sports.io/status",
+            headers={"x-apisports-key": settings.API_FOOTBALL_KEY},
+            timeout=15.0
+        )
+        results["test4_account"] = r4.json().get("response", {})
+    
+    return results
