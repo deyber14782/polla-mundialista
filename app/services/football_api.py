@@ -9,38 +9,43 @@ HEADERS = {
 }
 
 async def get_world_cup_fixtures() -> list[dict]:
-    """Trae todos los partidos del Mundial 2026 desde la API."""
+    """Trae partidos del Mundial filtrando por fecha."""
+    from datetime import date, timedelta
+    
+    all_fixtures = []
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{BASE_URL}/fixtures",
-            headers=HEADERS,
-            params={
-                "league": WORLD_CUP_2026_ID,
-                "season": 2026,
-            },
-            timeout=15.0
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("response", [])
+        # Buscar los últimos 3 días + hoy
+        for days_ago in range(3, -1, -1):
+            d = date.today() - timedelta(days=days_ago)
+            response = await client.get(
+                f"{BASE_URL}/fixtures",
+                headers=HEADERS,
+                params={"date": str(d)},
+                timeout=15.0
+            )
+            response.raise_for_status()
+            data = response.json()
+            fixtures = data.get("response", [])
+            # Filtrar solo Mundial (league id = 1)
+            wc = [f for f in fixtures if f.get("league", {}).get("id") == WORLD_CUP_2026_ID]
+            all_fixtures.extend(wc)
+    
+    return all_fixtures
 
 
 async def get_live_fixtures() -> list[dict]:
-    """Trae los partidos que están en vivo ahora mismo."""
+    """Trae partidos en vivo del Mundial."""
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{BASE_URL}/fixtures",
             headers=HEADERS,
-            params={
-                "league": WORLD_CUP_2026_ID,
-                "season": 2026,
-                "live": "all",
-            },
+            params={"live": "all"},
             timeout=15.0
         )
         response.raise_for_status()
         data = response.json()
-        return data.get("response", [])
+        # Filtrar solo Mundial
+        return [f for f in data.get("response", []) if f.get("league", {}).get("id") == WORLD_CUP_2026_ID]
 
 
 async def get_fixture_by_id(fixture_id: int) -> dict | None:
