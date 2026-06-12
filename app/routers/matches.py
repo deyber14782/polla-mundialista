@@ -132,34 +132,66 @@ async def get_match(fixture_id: int, current_user: dict = Depends(get_current_us
 
 @router.post("/admin/force-sync")
 async def force_sync(current_user: dict = Depends(require_admin)):
-    """Forzar actualización de todos los partidos desde la API."""
+    """Sincroniza partidos matcheando por equipos + fecha."""
     from app.services.football_api import get_world_cup_fixtures
     from app.services.matches_service import parse_fixture, calculate_points_for_match
+    from datetime import datetime
 
+    # Traer todos los fixtures reales de la API
     fixtures = await get_world_cup_fixtures()
+    if not fixtures:
+        return {"error": "La API no devolvió fixtures", "updated": 0}
+
+    # Construir lookup de la API: (home_name_lower, away_name_lower, date) -> parsed
+    api_lookup = {}
+    for f in fixtures:
+        parsed = parse_fixture(f)
+        home = parsed["home_team"]["name"].lower().strip()
+        away = parsed["away_team"]["name"].lower().strip()
+        # Solo fecha (sin hora) para matchear más flexible
+        ko_date = parsed["kickoff"][:10]  # "2026-06-11"
+        api_lookup[(home, away, ko_date)] = parsed
+
+    # Leer partidos de Firestore y matchear
+    all_docs = list(db.collection("matches").stream())
     updated = 0
     points_calculated = 0
+    not_found = []
 
-    for fixture_data in fixtures:
-        parsed = parse_fixture(fixture_data)
-        doc_ref = db.collection("matches").document(str(parsed["fixture_id"]))
-        doc = doc_ref.get()
-        if doc.exists:
-            doc_ref.update({
-                "status": parsed["status"],
-                "score": parsed["score"],
-            })
-            updated += 1
+    for doc in all_docs:
+        m = doc.to_dict()
+        home = m["home_team"]["name"].lower().strip()
+        away = m["away_team"]["name"].lower().strip()
+        ko_date = m["kickoff"][:10]
 
-            # Si el partido terminó, calcular puntos
-            if parsed["status"] == "FT" and parsed["score"]["home"] is not None:
-                await calculate_points_for_match(parsed["fixture_id"])
-                points_calculated += 1
+        api_match = api_lookup.get((home, away, ko_date))
+        if not api_match:
+            # Intentar invertido por si acaso
+            api_match = api_lookup.get((away, home, ko_date))
+
+        if not api_match:
+            if m.get("status") == "NS":
+                not_found.append(f"{m['home_team']['name']} vs {m['away_team']['name']} ({ko_date})")
+            continue
+
+        # Actualizar status y score
+        update_data = {
+            "status": api_match["status"],
+            "score": api_match["score"],
+        }
+        doc.reference.update(update_data)
+        updated += 1
+
+        # Si terminó, calcular puntos
+        if api_match["status"] == "FT" and api_match["score"]["home"] is not None:
+            await calculate_points_for_match(int(m["fixture_id"]))
+            points_calculated += 1
 
     cache.invalidate("all_matches", "matches_dict", "ranking")
 
     return {
+        "total_from_api": len(fixtures),
         "updated": updated,
         "points_calculated": points_calculated,
-        "total_fixtures_from_api": len(fixtures),
+        "not_matched": not_found[:20],
     }
