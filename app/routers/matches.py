@@ -372,3 +372,44 @@ async def recalculate_all(current_user: dict = Depends(require_admin)):
         "predictions_reset": len(preds),
         "matches_recalculated": points_calculated,
     }
+
+@router.get("/admin/debug-api2")
+async def debug_api2(current_user: dict = Depends(require_admin)):
+    import httpx
+    from app.core.config import settings
+    from datetime import date, timedelta
+    
+    results = {}
+    
+    async with httpx.AsyncClient() as client:
+        # Check account status
+        r0 = await client.get(
+            "https://v3.football.api-sports.io/status",
+            headers={"x-apisports-key": settings.API_FOOTBALL_KEY},
+            timeout=15.0
+        )
+        results["account"] = r0.json().get("response", {})
+        
+        # Check each day individually
+        for days_ago in range(5, -1, -1):
+            d = date.today() - timedelta(days=days_ago)
+            r = await client.get(
+                "https://v3.football.api-sports.io/fixtures",
+                headers={"x-apisports-key": settings.API_FOOTBALL_KEY},
+                params={"date": str(d)},
+                timeout=15.0
+            )
+            data = r.json()
+            all_fixtures = data.get("response", [])
+            wc = [f for f in all_fixtures if f.get("league", {}).get("id") == 1]
+            results[str(d)] = {
+                "total_all": len(all_fixtures),
+                "world_cup": len(wc),
+                "errors": data.get("errors", {}),
+                "wc_matches": [
+                    f"{f['teams']['home']['name']} vs {f['teams']['away']['name']} ({f['fixture']['status']['short']})"
+                    for f in wc
+                ]
+            }
+    
+    return results
