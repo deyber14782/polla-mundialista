@@ -165,12 +165,12 @@ async def create_batch_predictions(
         if is_match_locked(match["kickoff"]):
             skipped.append({"fixture_id": data.fixture_id, "reason": "Partido ya comenzó"})
             continue
-
+        
+        pred_id = get_prediction_id(uid, data.fixture_id)
         existing = db.collection("predictions").document(pred_id).get()
         if existing.exists and existing.to_dict().get("processed"):
             skipped.append({"fixture_id": data.fixture_id, "reason": "Ya procesada"})
             continue
-        pred_id = get_prediction_id(uid, data.fixture_id)
         prediction = {
             "id": pred_id,
             "uid": uid,
