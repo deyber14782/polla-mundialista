@@ -129,7 +129,7 @@ async def calculate_points_for_match(fixture_id: int):
         user_doc = user_ref.get()
         if user_doc.exists:
             user_data = user_doc.to_dict()
-            exact = 1 if points == 5 else 0
+            exact = 1 if points == 3 else 0
             user_ref.update({
                 "total_score":      user_data.get("total_score", 0) + points,
                 "predictions_count": user_data.get("predictions_count", 0) + 1,
