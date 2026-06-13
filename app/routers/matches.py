@@ -319,3 +319,55 @@ async def debug_names(current_user: dict = Depends(require_admin)):
             for f in fixtures
         ]
     }
+
+@router.post("/admin/recalculate-all")
+async def recalculate_all(current_user: dict = Depends(require_admin)):
+    """Resetea TODOS los puntos y recalcula desde cero."""
+    from app.services.matches_service import calculate_points_for_match
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    # 1. Resetear todos los usuarios a 0
+    users = list(db.collection("users").stream())
+    for u in users:
+        u.reference.update({
+            "total_score": 0,
+            "exact_results": 0,
+            "predictions_count": 0,
+        })
+
+    # 2. Resetear todas las predicciones
+    preds = list(db.collection("predictions").stream())
+    for p in preds:
+        p.reference.update({
+            "points": None,
+            "processed": False,
+        })
+
+    # 3. Recalcular puntos solo de partidos terminados
+    finished = db.collection("matches")\
+        .where(filter=FieldFilter("status", "==", "FT"))\
+        .stream()
+
+    points_calculated = 0
+    for match_doc in finished:
+        m = match_doc.to_dict()
+        if m["score"]["home"] is not None:
+            await calculate_points_for_match(int(m["fixture_id"]))
+            points_calculated += 1
+
+    # 4. Actualizar predictions_count de cada usuario
+    for u in db.collection("users").stream():
+        uid = u.to_dict().get("uid")
+        if not uid:
+            continue
+        count = sum(1 for _ in db.collection("predictions")
+            .where(filter=FieldFilter("uid", "==", uid)).stream())
+        u.reference.update({"predictions_count": count})
+
+    cache.invalidate("all_matches", "matches_dict", "ranking")
+
+    return {
+        "users_reset": len(users),
+        "predictions_reset": len(preds),
+        "matches_recalculated": points_calculated,
+    }
