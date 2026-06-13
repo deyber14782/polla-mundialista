@@ -341,6 +341,7 @@ async def recalculate_all(current_user: dict = Depends(require_admin)):
         p.reference.update({
             "points": None,
             "processed": False,
+            "status": "pending",
         })
 
     # 3. Recalcular puntos solo de partidos terminados

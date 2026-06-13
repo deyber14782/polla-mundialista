@@ -116,14 +116,17 @@ async def calculate_points_for_match(fixture_id: int):
         .stream()
 
     for pred_doc in predictions:
-        pred   = pred_doc.to_dict()
+        pred = pred_doc.to_dict()
+        # Saltar predicciones ya procesadas
+        if pred.get("processed"):
+            continue
         points = calculate_points(
             pred_home=pred["predicted_home"],
             pred_away=pred["predicted_away"],
             real_home=real_home,
             real_away=real_away,
         )
-        pred_doc.reference.update({"points": points, "processed": True})
+        pred_doc.reference.update({"points": points, "processed": True, "status": "processed"})
 
         user_ref = db.collection("users").document(pred["uid"])
         user_doc = user_ref.get()
