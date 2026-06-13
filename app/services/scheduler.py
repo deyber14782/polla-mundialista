@@ -125,13 +125,14 @@ async def lock_started_matches():
 
 
 def start_scheduler():
+
     scheduler.add_job(
-        sync_live_matches,
-        trigger=IntervalTrigger(minutes=5),
-        id="sync_live_matches",
-        name="Sincronizar partidos en vivo",
-        replace_existing=True,
-    )
+            sync_live_matches,
+            trigger=IntervalTrigger(minutes=5),
+            id="sync_live_matches",
+            name="Sincronizar partidos en vivo",
+            replace_existing=True,
+        )
 
     scheduler.add_job(
         lock_started_matches,

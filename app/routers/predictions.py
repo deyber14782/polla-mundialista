@@ -165,12 +165,31 @@ async def create_batch_predictions(
         if is_match_locked(match["kickoff"]):
             skipped.append({"fixture_id": data.fixture_id, "reason": "Partido ya comenzó"})
             continue
-        
+    
         pred_id = get_prediction_id(uid, data.fixture_id)
         existing = db.collection("predictions").document(pred_id).get()
         if existing.exists and existing.to_dict().get("processed"):
             skipped.append({"fixture_id": data.fixture_id, "reason": "Ya procesada"})
             continue
+        # Si el kickoff ya pasó, guardar con 0 puntos
+        from datetime import datetime, timezone
+        kickoff_str = match.get("kickoff", "")
+        try:
+            kickoff_time = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+            if datetime.now(timezone.utc) > kickoff_time:
+                prediction = {
+                    "id": pred_id, "uid": uid,
+                    "fixture_id": data.fixture_id,
+                    "predicted_home": data.predicted_home,
+                    "predicted_away": data.predicted_away,
+                    "penalty_winner": data.penalty_winner,
+                    "points": 0, "status": "processed", "processed": True,
+                }
+                db.collection("predictions").document(pred_id).set(prediction)
+                saved.append(data.fixture_id)
+                continue
+        except:
+            pass
         prediction = {
             "id": pred_id,
             "uid": uid,
