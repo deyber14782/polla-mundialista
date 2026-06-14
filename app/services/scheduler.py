@@ -60,7 +60,7 @@ async def sync_live_matches():
                 "rd congo": "dr congo", "uzbekistán": "uzbekistan",
                 "colombia": "colombia", "inglaterra": "england", "croacia": "croatia",
                 "ghana": "ghana", "panamá": "panama", "ecuador": "ecuador",
-                "uruguay": "uruguay",
+                "uruguay": "uruguay", "türkiye": "turkey",  "curaçao": "curacao",
             }
             def normalize(name):
                 return NAME_MAP.get(name.lower().strip(), name.lower().strip())
@@ -70,8 +70,8 @@ async def sync_live_matches():
                 api_lookup = {}
                 for f in fixtures:
                     p = parse_fixture(f)
-                    h = p["home_team"]["name"].lower().strip()
-                    a = p["away_team"]["name"].lower().strip()
+                    h = normalize(p["home_team"]["name"])
+                    a = normalize(p["away_team"]["name"])
                     api_lookup[(h, a, p["kickoff"][:10])] = p
 
                 for doc in db.collection("matches").stream():

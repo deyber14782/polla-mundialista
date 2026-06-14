@@ -183,6 +183,8 @@ async def force_sync(current_user: dict = Depends(require_admin)):
         "panamá": "panama",
         "ecuador": "ecuador",
         "uruguay": "uruguay",
+        "türkiye": "turkey",
+        "curaçao": "curacao",
     }
 
     def normalize(name):
@@ -196,8 +198,8 @@ async def force_sync(current_user: dict = Depends(require_admin)):
     api_lookup = {}
     for f in fixtures:
         parsed = parse_fixture(f)
-        home = parsed["home_team"]["name"].lower().strip()
-        away = parsed["away_team"]["name"].lower().strip()
+        home = normalize(parsed["home_team"]["name"])
+        away = normalize(parsed["away_team"]["name"])
         ko_date = parsed["kickoff"][:10]
         api_lookup[(home, away, ko_date)] = parsed
 
