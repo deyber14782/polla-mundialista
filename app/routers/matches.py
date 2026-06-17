@@ -185,6 +185,7 @@ async def force_sync(current_user: dict = Depends(require_admin)):
         "uruguay": "uruguay",
         "türkiye": "turkey",
         "curaçao": "curacao",
+        "cape verde islands": "cape verde",
     }
 
     def normalize(name):
