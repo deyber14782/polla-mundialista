@@ -325,9 +325,9 @@ async def debug_names(current_user: dict = Depends(require_admin)):
 
 @router.post("/admin/recalculate-all")
 async def recalculate_all(current_user: dict = Depends(require_admin)):
-    """Resetea TODOS los puntos y recalcula desde cero."""
-    from app.services.matches_service import calculate_points_for_match
-    from google.cloud.firestore_v1.base_query import FieldFilter
+    """Resetea TODOS los puntos y recalcula, verificando timestamps."""
+    from app.services.matches_service import calculate_points
+    from datetime import datetime, timezone
 
     # 1. Resetear todos los usuarios a 0
     users = list(db.collection("users").stream())
@@ -338,26 +338,81 @@ async def recalculate_all(current_user: dict = Depends(require_admin)):
             "predictions_count": 0,
         })
 
-    # 2. Resetear todas las predicciones
-    preds = list(db.collection("predictions").stream())
-    for p in preds:
-        p.reference.update({
-            "points": None,
-            "processed": False,
-            "status": "pending",
+    # 2. Cargar todos los matches en un dict
+    matches_dict = {doc.to_dict()["fixture_id"]: doc.to_dict() 
+                    for doc in db.collection("matches").stream()}
+
+    # 3. Procesar cada predicción individualmente
+    all_preds = list(db.collection("predictions").stream())
+    processed_count = 0
+    late_count = 0
+
+    for pred_doc in all_preds:
+        pred = pred_doc.to_dict()
+        fixture_id = pred.get("fixture_id")
+        match = matches_dict.get(fixture_id)
+
+        if not match or match.get("status") != "FT":
+            # Partido no terminado: resetear predicción
+            pred_doc.reference.update({
+                "points": None,
+                "processed": False,
+                "status": "pending",
+            })
+            continue
+
+        # Verificar si la predicción se hizo DESPUÉS del kickoff
+        kickoff_str = match.get("kickoff", "")
+        pred_update_time = pred_doc.update_time  # Timestamp de Firestore
+        
+        try:
+            kickoff_time = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+            if pred_update_time and pred_update_time.timestamp() > kickoff_time.timestamp():
+                # Predicción tardía: 0 puntos
+                pred_doc.reference.update({
+                    "points": 0,
+                    "processed": True,
+                    "status": "processed",
+                })
+                late_count += 1
+                continue
+        except:
+            pass
+
+        # Calcular puntos normalmente
+        real_home = match["score"]["home"]
+        real_away = match["score"]["away"]
+
+        if real_home is None or real_away is None:
+            continue
+
+        points = calculate_points(
+            pred_home=pred.get("predicted_home", 0),
+            pred_away=pred.get("predicted_away", 0),
+            real_home=real_home,
+            real_away=real_away,
+        )
+
+        pred_doc.reference.update({
+            "points": points,
+            "processed": True,
+            "status": "processed",
         })
 
-    # 3. Recalcular puntos solo de partidos terminados
-    finished = db.collection("matches")\
-        .where(filter=FieldFilter("status", "==", "FT"))\
-        .stream()
+        # Actualizar usuario
+        uid = pred.get("uid")
+        if uid:
+            user_ref = db.collection("users").document(uid)
+            user_doc = user_ref.get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict()
+                exact = 1 if points == 3 else 0
+                user_ref.update({
+                    "total_score": user_data.get("total_score", 0) + points,
+                    "exact_results": user_data.get("exact_results", 0) + exact,
+                })
 
-    points_calculated = 0
-    for match_doc in finished:
-        m = match_doc.to_dict()
-        if m["score"]["home"] is not None:
-            await calculate_points_for_match(int(m["fixture_id"]))
-            points_calculated += 1
+        processed_count += 1
 
     # 4. Actualizar predictions_count de cada usuario
     for u in db.collection("users").stream():
@@ -372,8 +427,9 @@ async def recalculate_all(current_user: dict = Depends(require_admin)):
 
     return {
         "users_reset": len(users),
-        "predictions_reset": len(preds),
-        "matches_recalculated": points_calculated,
+        "predictions_total": len(all_preds),
+        "processed": processed_count,
+        "late_predictions": late_count,
     }
 
 @router.get("/admin/debug-api2")
