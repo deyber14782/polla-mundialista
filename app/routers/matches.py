@@ -327,24 +327,37 @@ async def debug_names(current_user: dict = Depends(require_admin)):
 
 @router.post("/admin/recalculate-all")
 async def recalculate_all(current_user: dict = Depends(require_admin)):
-    """Resetea TODOS los puntos y recalcula, verificando timestamps."""
+    """Resetea puntos y recalcula. Usuarios creados después del kickoff → 0 pts."""
     from app.services.matches_service import calculate_points
     from datetime import datetime, timezone
+    from firebase_admin import auth as firebase_auth
 
-    # 1. Resetear todos los usuarios a 0
+    # 1. Resetear usuarios
     users = list(db.collection("users").stream())
     for u in users:
-        u.reference.update({
-            "total_score": 0,
-            "exact_results": 0,
-            "predictions_count": 0,
-        })
+        u.reference.update({"total_score": 0, "exact_results": 0, "predictions_count": 0})
 
-    # 2. Cargar todos los matches en un dict
-    matches_dict = {doc.to_dict()["fixture_id"]: doc.to_dict() 
+    # 2. Cargar matches
+    matches_dict = {doc.to_dict()["fixture_id"]: doc.to_dict()
                     for doc in db.collection("matches").stream()}
 
-    # 3. Procesar cada predicción individualmente
+    # 3. Cache de fechas de creación de usuarios (para no consultar Auth N veces)
+    user_created_cache = {}
+
+    def get_user_created(uid):
+        if uid in user_created_cache:
+            return user_created_cache[uid]
+        try:
+            auth_user = firebase_auth.get_user(uid)
+            created_ms = auth_user.user_metadata.creation_timestamp
+            created_time = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc)
+            user_created_cache[uid] = created_time
+            return created_time
+        except:
+            user_created_cache[uid] = None
+            return None
+
+    # 4. Procesar predicciones
     all_preds = list(db.collection("predictions").stream())
     processed_count = 0
     late_count = 0
@@ -352,42 +365,36 @@ async def recalculate_all(current_user: dict = Depends(require_admin)):
     for pred_doc in all_preds:
         pred = pred_doc.to_dict()
         fixture_id = pred.get("fixture_id")
+        uid = pred.get("uid")
         match = matches_dict.get(fixture_id)
 
         if not match or match.get("status") != "FT":
-            # Partido no terminado: resetear predicción
-            pred_doc.reference.update({
-                "points": None,
-                "processed": False,
-                "status": "pending",
-            })
+            pred_doc.reference.update({"points": None, "processed": False, "status": "pending"})
             continue
 
-        # Verificar si la predicción se hizo DESPUÉS del kickoff
-        kickoff_str = match.get("kickoff", "")
-        pred_update_time = pred_doc.update_time  # Timestamp de Firestore
-        
-        try:
-            kickoff_time = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
-            if pred_update_time and pred_update_time.timestamp() > kickoff_time.timestamp():
-                # Predicción tardía: 0 puntos
-                pred_doc.reference.update({
-                    "points": 0,
-                    "processed": True,
-                    "status": "processed",
-                })
-                late_count += 1
-                continue
-        except:
-            pass
-
-        # Calcular puntos normalmente
         real_home = match["score"]["home"]
         real_away = match["score"]["away"]
-
         if real_home is None or real_away is None:
             continue
 
+        # Verificar si el usuario fue creado después del kickoff
+        kickoff_str = match.get("kickoff", "")
+        is_late = False
+
+        try:
+            kickoff_time = datetime.fromisoformat(kickoff_str.replace("Z", "+00:00"))
+            created_time = get_user_created(uid)
+            if created_time and created_time > kickoff_time:
+                is_late = True
+        except:
+            pass
+
+        if is_late:
+            pred_doc.reference.update({"points": 0, "processed": True, "status": "processed"})
+            late_count += 1
+            continue
+
+        # Calcular puntos normalmente
         points = calculate_points(
             pred_home=pred.get("predicted_home", 0),
             pred_away=pred.get("predicted_away", 0),
@@ -395,28 +402,23 @@ async def recalculate_all(current_user: dict = Depends(require_admin)):
             real_away=real_away,
         )
 
-        pred_doc.reference.update({
-            "points": points,
-            "processed": True,
-            "status": "processed",
-        })
+        pred_doc.reference.update({"points": points, "processed": True, "status": "processed"})
 
         # Actualizar usuario
-        uid = pred.get("uid")
         if uid:
             user_ref = db.collection("users").document(uid)
             user_doc = user_ref.get()
             if user_doc.exists:
-                user_data = user_doc.to_dict()
+                ud = user_doc.to_dict()
                 exact = 1 if points == 3 else 0
                 user_ref.update({
-                    "total_score": user_data.get("total_score", 0) + points,
-                    "exact_results": user_data.get("exact_results", 0) + exact,
+                    "total_score": ud.get("total_score", 0) + points,
+                    "exact_results": ud.get("exact_results", 0) + exact,
                 })
 
         processed_count += 1
 
-    # 4. Actualizar predictions_count de cada usuario
+    # 5. Actualizar predictions_count
     for u in db.collection("users").stream():
         uid = u.to_dict().get("uid")
         if not uid:
