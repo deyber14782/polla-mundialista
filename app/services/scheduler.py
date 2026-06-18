@@ -61,6 +61,7 @@ async def sync_live_matches():
                 "colombia": "colombia", "inglaterra": "england", "croacia": "croatia",
                 "ghana": "ghana", "panamá": "panama", "ecuador": "ecuador",
                 "uruguay": "uruguay", "türkiye": "turkey",  "curaçao": "curacao", "cape verde islands": "cape verde", "rd congo": "dr congo", "congo dr": "dr congo",
+                "czechia": "czech republic",
             }
             def normalize(name):
                 return NAME_MAP.get(name.lower().strip(), name.lower().strip())
