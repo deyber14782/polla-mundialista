@@ -682,3 +682,81 @@ async def calculate_group_classification(current_user: dict = Depends(require_ad
         "users_processed": len(results),
         "results": sorted(results, key=lambda x: -x["points"]),
     }
+
+@router.get("/admin/preview-classification-points")
+async def preview_classification_points(current_user: dict = Depends(require_admin)):
+    """Muestra puntos de clasificación que ganaría cada usuario. NO guarda nada."""
+    from app.services.bracket_service import calculate_group_table, get_best_third_places
+
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group"))\
+        .stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+
+    # Clasificados reales
+    real_results = {}
+    for m in group_matches:
+        if m.get("status") == "FT" and m["score"]["home"] is not None:
+            real_results[m["fixture_id"]] = {
+                "predicted_home": m["score"]["home"],
+                "predicted_away": m["score"]["away"],
+            }
+
+    groups = {}
+    for match in group_matches:
+        g = match.get("group", "")
+        if g not in groups:
+            groups[g] = []
+        groups[g].append(match)
+
+    real_qualified = set()
+    real_tables = {}
+    for group, matches in groups.items():
+        table = calculate_group_table(matches, real_results)
+        real_tables[group] = table
+        if len(table) >= 1: real_qualified.add(table[0]["code"])
+        if len(table) >= 2: real_qualified.add(table[1]["code"])
+    real_thirds = get_best_third_places(real_tables)
+    for third in real_thirds:
+        real_qualified.add(third["code"])
+
+    users = list(db.collection("users")
+        .where(filter=FieldFilter("role", "==", "player")).stream())
+
+    results = []
+    for user_doc in users:
+        user = user_doc.to_dict()
+        uid = user["uid"]
+
+        pred_docs = db.collection("predictions")\
+            .where(filter=FieldFilter("uid", "==", uid))\
+            .stream()
+        user_preds = {p.to_dict()["fixture_id"]: p.to_dict() for p in pred_docs}
+
+        user_qualified = set()
+        user_tables = {g: calculate_group_table(m, user_preds) for g, m in groups.items()}
+        for group, table in user_tables.items():
+            if len(table) >= 1: user_qualified.add(table[0]["code"])
+            if len(table) >= 2: user_qualified.add(table[1]["code"])
+        user_thirds = get_best_third_places(user_tables)
+        for third in user_thirds:
+            user_qualified.add(third["code"])
+
+        correct = user_qualified & real_qualified
+        class_pts = len(correct) * 2
+        prev_class = user.get("classification_pts", 0)
+        current_total = user.get("total_score", 0)
+        new_total = current_total - prev_class + class_pts
+
+        results.append({
+            "name": user.get("display_name", ""),
+            "correct_teams": len(correct),
+            "classification_points": class_pts,
+            "total_antes": current_total,
+            "total_despues": new_total,
+        })
+
+    return {
+        "real_qualified_count": len(real_qualified),
+        "users": sorted(results, key=lambda x: -x["total_despues"]),
+    }
