@@ -9,6 +9,7 @@ import httpx
 from app.core.config import settings
 from app.core import cache
 from pydantic import BaseModel
+from typing import Optional
 
 
 
@@ -18,6 +19,7 @@ class SetTeamsBody(BaseModel):
     fixture_id: int
     home_code: str
     away_code: str
+    kickoff: Optional[str] = None  # ISO format opcional
 
 def _get_all_matches_cached():
     """Lee matches de caché o Firestore. Cachea 5 min."""
@@ -770,8 +772,7 @@ async def preview_classification_points(current_user: dict = Depends(require_adm
 
 @router.post("/admin/set-match-teams")
 async def set_match_teams(body: SetTeamsBody, current_user: dict = Depends(require_admin)):
-    """Asigna equipos reales a un partido por código de equipo."""
-    # Buscar los datos de los equipos en cualquier partido de grupos
+    """Asigna equipos reales (y opcionalmente kickoff) a un partido."""
     group_docs = db.collection("matches")\
         .where(filter=FieldFilter("phase", "==", "group"))\
         .stream()
@@ -804,7 +805,11 @@ async def set_match_teams(body: SetTeamsBody, current_user: dict = Depends(requi
     if not doc_ref.get().exists:
         return {"error": f"Partido {body.fixture_id} no existe"}
 
-    doc_ref.update({"home_team": home, "away_team": away})
+    update_data = {"home_team": home, "away_team": away}
+    if body.kickoff:
+        update_data["kickoff"] = body.kickoff
+
+    doc_ref.update(update_data)
 
     from app.core import cache
     cache.invalidate("all_matches", "matches_dict", "ranking")
@@ -812,4 +817,5 @@ async def set_match_teams(body: SetTeamsBody, current_user: dict = Depends(requi
     return {
         "fixture_id": body.fixture_id,
         "set": f"{home['name']} vs {away['name']}",
+        "kickoff": body.kickoff or "(sin cambio)",
     }
