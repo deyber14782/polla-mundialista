@@ -477,3 +477,60 @@ async def debug_api2(current_user: dict = Depends(require_admin)):
             }
     
     return results
+
+@router.post("/admin/sync-knockouts")
+async def sync_knockouts(current_user: dict = Depends(require_admin)):
+    """Sincroniza eliminatorias por orden cronológico con la API."""
+    from app.services.football_api import get_world_cup_fixtures
+    from app.services.matches_service import parse_fixture
+
+    fixtures = await get_world_cup_fixtures()
+    if not fixtures:
+        return {"error": "API sin datos", "updated": 0}
+
+    # Parsear y filtrar solo knockouts de la API (no group stage)
+    # La API marca la ronda en league.round
+    api_ko = []
+    for f in fixtures:
+        round_name = f.get("league", {}).get("round", "").lower()
+        if "group" in round_name:
+            continue
+        parsed = parse_fixture(f)
+        api_ko.append(parsed)
+
+    # Ordenar por kickoff
+    api_ko.sort(key=lambda x: x["kickoff"])
+
+    # Traer knockouts de Firestore ordenados por kickoff
+    ko_docs = []
+    for doc in db.collection("matches").stream():
+        m = doc.to_dict()
+        if m.get("phase") != "group":
+            ko_docs.append((doc, m))
+    ko_docs.sort(key=lambda x: x[1]["kickoff"])
+
+    # Emparejar por orden cronológico
+    updated = 0
+    detail = []
+    for i, (doc, m) in enumerate(ko_docs):
+        if i >= len(api_ko):
+            break
+        api_match = api_ko[i]
+        doc.reference.update({
+            "home_team": api_match["home_team"],
+            "away_team": api_match["away_team"],
+            "kickoff": api_match["kickoff"],
+            "status": api_match["status"],
+            "score": api_match["score"],
+        })
+        updated += 1
+        detail.append(f'{m["fixture_id"]}: {api_match["home_team"]["name"]} vs {api_match["away_team"]["name"]} ({api_match["status"]})')
+
+    cache.invalidate("all_matches", "matches_dict", "ranking")
+
+    return {
+        "api_knockouts": len(api_ko),
+        "firestore_knockouts": len(ko_docs),
+        "updated": updated,
+        "detail": detail,
+    }
