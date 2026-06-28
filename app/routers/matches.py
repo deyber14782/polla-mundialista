@@ -589,3 +589,96 @@ async def preview_qualified(current_user: dict = Depends(require_admin)):
         "tables": output,
         "best_thirds_qualified": best_thirds,
     }
+
+@router.post("/admin/calculate-group-classification")
+async def calculate_group_classification(current_user: dict = Depends(require_admin)):
+    """Da 2 pts por cada equipo que el usuario proyectó que clasificaba a 32avos."""
+    from app.services.bracket_service import calculate_group_table, get_best_third_places
+
+    # 1. Partidos de grupos
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group"))\
+        .stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+
+    # 2. Calcular CLASIFICADOS REALES (según resultados reales)
+    real_results = {}
+    for m in group_matches:
+        if m.get("status") == "FT" and m["score"]["home"] is not None:
+            real_results[m["fixture_id"]] = {
+                "predicted_home": m["score"]["home"],
+                "predicted_away": m["score"]["away"],
+            }
+
+    groups = {}
+    for match in group_matches:
+        g = match.get("group", "")
+        if g not in groups:
+            groups[g] = []
+        groups[g].append(match)
+
+    # Equipos realmente clasificados (1ros, 2dos, mejores terceros)
+    real_qualified = set()  # set de team ids
+    real_tables = {}
+    for group, matches in groups.items():
+        table = calculate_group_table(matches, real_results)
+        real_tables[group] = table
+        if len(table) >= 1: real_qualified.add(table[0]["code"])
+        if len(table) >= 2: real_qualified.add(table[1]["code"])
+
+    real_thirds = get_best_third_places(real_tables)
+    for third in real_thirds:
+        real_qualified.add(third["code"])
+
+    # 3. Para cada usuario, calcular SU proyección y comparar
+    users = list(db.collection("users")
+        .where(filter=FieldFilter("role", "==", "player")).stream())
+
+    results = []
+    for user_doc in users:
+        user = user_doc.to_dict()
+        uid = user["uid"]
+
+        # Predicciones del usuario
+        pred_docs = db.collection("predictions")\
+            .where(filter=FieldFilter("uid", "==", uid))\
+            .stream()
+        user_preds = {p.to_dict()["fixture_id"]: p.to_dict() for p in pred_docs}
+
+        # Calcular tablas proyectadas del usuario
+        user_qualified = set()
+        for group, matches in groups.items():
+            table = calculate_group_table(matches, user_preds)
+            if len(table) >= 1: user_qualified.add(table[0]["code"])
+            if len(table) >= 2: user_qualified.add(table[1]["code"])
+
+        # Mejores terceros proyectados
+        user_tables = {g: calculate_group_table(m, user_preds) for g, m in groups.items()}
+        user_thirds = get_best_third_places(user_tables)
+        for third in user_thirds:
+            user_qualified.add(third["code"])
+
+        # Comparar: cuántos equipos proyectados están en los reales
+        correct = user_qualified & real_qualified
+        classification_pts = len(correct) * 2
+
+        # Guardar en el usuario (campo separado para no duplicar)
+        prev_class_pts = user.get("classification_pts", 0)
+        user_doc.reference.update({
+            "classification_pts": classification_pts,
+            "total_score": user.get("total_score", 0) - prev_class_pts + classification_pts,
+        })
+
+        results.append({
+            "name": user.get("display_name", ""),
+            "correct_teams": len(correct),
+            "points": classification_pts,
+        })
+
+    cache.invalidate("ranking")
+
+    return {
+        "real_qualified_count": len(real_qualified),
+        "users_processed": len(results),
+        "results": sorted(results, key=lambda x: -x["points"]),
+    }
