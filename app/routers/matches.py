@@ -534,3 +534,58 @@ async def sync_knockouts(current_user: dict = Depends(require_admin)):
         "updated": updated,
         "detail": detail,
     }
+
+@router.get("/admin/preview-qualified")
+async def preview_qualified(current_user: dict = Depends(require_admin)):
+    """Muestra quiénes clasificaron a 32avos según resultados reales. NO toca puntos."""
+    from app.services.bracket_service import calculate_group_table, get_best_third_places
+
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group"))\
+        .stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+
+    real_results = {}
+    for m in group_matches:
+        if m.get("status") == "FT" and m["score"]["home"] is not None:
+            real_results[m["fixture_id"]] = {
+                "predicted_home": m["score"]["home"],
+                "predicted_away": m["score"]["away"],
+            }
+
+    groups = {}
+    for match in group_matches:
+        g = match.get("group", "")
+        if g not in groups:
+            groups[g] = []
+        groups[g].append(match)
+
+    output = {}
+    real_tables = {}
+    for group in sorted(groups.keys()):
+        table = calculate_group_table(groups[group], real_results)
+        real_tables[group] = table
+        output[group] = [
+            {
+                "pos": i + 1,
+                "team": t["name"],
+                "pts": t["pts"],
+                "dg": t["dg"],
+                "gf": t["gf"],
+                "qualifies": i < 2,
+            }
+            for i, t in enumerate(table)
+        ]
+
+    # Mejores terceros
+    thirds = get_best_third_places(real_tables)
+    best_thirds = [{"team": t["name"], "group": t.get("group", "?"), "pts": t["pts"], "dg": t["dg"]} for t in thirds]
+
+    # Contar partidos jugados
+    played = sum(1 for m in group_matches if m.get("status") == "FT")
+
+    return {
+        "group_matches_played": f"{played}/{len(group_matches)}",
+        "tables": output,
+        "best_thirds_qualified": best_thirds,
+    }
