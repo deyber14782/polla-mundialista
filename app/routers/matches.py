@@ -8,9 +8,16 @@ from app.core import cache
 import httpx
 from app.core.config import settings
 from app.core import cache
+from pydantic import BaseModel
+
+
 
 router = APIRouter(prefix="/matches", tags=["Matches"])
 
+class SetTeamsBody(BaseModel):
+    fixture_id: int
+    home_code: str
+    away_code: str
 
 def _get_all_matches_cached():
     """Lee matches de caché o Firestore. Cachea 5 min."""
@@ -759,4 +766,50 @@ async def preview_classification_points(current_user: dict = Depends(require_adm
     return {
         "real_qualified_count": len(real_qualified),
         "users": sorted(results, key=lambda x: -x["total_despues"]),
+    }
+
+@router.post("/admin/set-match-teams")
+async def set_match_teams(body: SetTeamsBody, current_user: dict = Depends(require_admin)):
+    """Asigna equipos reales a un partido por código de equipo."""
+    # Buscar los datos de los equipos en cualquier partido de grupos
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group"))\
+        .stream()
+
+    teams_by_code = {}
+    for doc in group_docs:
+        m = doc.to_dict()
+        for side in ["home_team", "away_team"]:
+            t = m[side]
+            if t.get("code"):
+                teams_by_code[t["code"].upper()] = {
+                    "id": t.get("id", 999),
+                    "name": t["name"],
+                    "code": t["code"],
+                    "logo": t.get("logo", ""),
+                }
+
+    home = teams_by_code.get(body.home_code.upper())
+    away = teams_by_code.get(body.away_code.upper())
+
+    if not home or not away:
+        return {
+            "error": "Código no encontrado",
+            "home_found": home is not None,
+            "away_found": away is not None,
+            "available_codes": sorted(teams_by_code.keys()),
+        }
+
+    doc_ref = db.collection("matches").document(str(body.fixture_id))
+    if not doc_ref.get().exists:
+        return {"error": f"Partido {body.fixture_id} no existe"}
+
+    doc_ref.update({"home_team": home, "away_team": away})
+
+    from app.core import cache
+    cache.invalidate("all_matches", "matches_dict", "ranking")
+
+    return {
+        "fixture_id": body.fixture_id,
+        "set": f"{home['name']} vs {away['name']}",
     }
