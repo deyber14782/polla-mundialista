@@ -972,3 +972,35 @@ async def preview_corrected_bracket(uid: str, current_user: dict = Depends(requi
         })
 
     return {"uid": uid, "bracket": output}
+
+@router.get("/admin/preview-user-groups")
+async def preview_user_groups(uid: str, current_user: dict = Depends(require_admin)):
+    """Muestra las tablas de grupos proyectadas según las predicciones del usuario."""
+    from app.services.bracket_service import calculate_group_table, get_best_third_places
+
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group")).stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+
+    pred_docs = db.collection("predictions")\
+        .where(filter=FieldFilter("uid", "==", uid)).stream()
+    predictions = {p.to_dict()["fixture_id"]: p.to_dict() for p in pred_docs}
+
+    groups = {}
+    for match in group_matches:
+        g = match.get("group", "")
+        groups.setdefault(g, []).append(match)
+
+    group_tables = {g: calculate_group_table(m, predictions) for g, m in groups.items()}
+
+    output = {}
+    for group in sorted(group_tables.keys()):
+        output[group] = [
+            {"pos": i+1, "team": t["name"], "pts": t["pts"], "dg": t["dg"], "gf": t["gf"]}
+            for i, t in enumerate(group_tables[group])
+        ]
+
+    thirds = get_best_third_places(group_tables)
+    best_thirds = [{"team": t["name"], "group": t.get("group","?"), "pts": t["pts"]} for t in thirds]
+
+    return {"uid": uid, "tables": output, "best_thirds": best_thirds}
