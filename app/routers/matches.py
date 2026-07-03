@@ -819,3 +819,35 @@ async def set_match_teams(body: SetTeamsBody, current_user: dict = Depends(requi
         "set": f"{home['name']} vs {away['name']}",
         "kickoff": body.kickoff or "(sin cambio)",
     }
+
+@router.get("/admin/debug-user-pred")
+async def debug_user_pred(uid: str, current_user: dict = Depends(require_admin)):
+    """Muestra las predicciones de eliminatoria de un usuario."""
+    pred_docs = db.collection("predictions")\
+        .where(filter=FieldFilter("uid", "==", uid))\
+        .stream()
+
+    knockout_preds = []
+    for doc in pred_docs:
+        p = doc.to_dict()
+        fixture_id = p.get("fixture_id", 0)
+        # Solo eliminatorias (fixture_id >= 10101)
+        if fixture_id >= 10101:
+            match_doc = db.collection("matches").document(str(fixture_id)).get()
+            match = match_doc.to_dict() if match_doc.exists else {}
+            knockout_preds.append({
+                "doc_id": doc.id,
+                "fixture_id": fixture_id,
+                "prediction_data": p,
+                "match_teams": {
+                    "home": match.get("home_team", {}).get("name"),
+                    "away": match.get("away_team", {}).get("name"),
+                } if match else None,
+            })
+
+    knockout_preds.sort(key=lambda x: x["fixture_id"])
+    return {
+        "uid": uid,
+        "total_knockout_predictions": len(knockout_preds),
+        "predictions": knockout_preds,
+    }
