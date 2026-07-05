@@ -1004,3 +1004,87 @@ async def preview_user_groups(uid: str, current_user: dict = Depends(require_adm
     best_thirds = [{"team": t["name"], "group": t.get("group","?"), "pts": t["pts"]} for t in thirds]
 
     return {"uid": uid, "tables": output, "best_thirds": best_thirds}
+
+@router.get("/admin/preview-r16-classification")
+async def preview_r16_classification(current_user: dict = Depends(require_admin)):
+    """Preview: 4 pts por cada equipo que el usuario proyectó llegaba a octavos. NO guarda."""
+    from app.services.bracket_service import (
+        calculate_group_table, _get_winner_from_prediction, _tbd_team
+    )
+
+    # 16 equipos REALES que llegaron a octavos (por código)
+    REAL_R16_CODES = {
+        "CAN", "MAR", "PAR", "FRA", "BRA", "NOR", "MEX", "ENG",
+        "ESP", "POR", "USA", "BEL", "EGY", "ARG", "SUI", "COL"
+    }
+
+    # Cruces oficiales de R32 (para proyectar el bracket del usuario)
+    R32 = [
+        (10101, "2A", "2B"), (10102, "1C", "2F"), (10103, "1E", "3D"),
+        (10104, "1F", "2C"), (10105, "2E", "2I"), (10106, "1I", "3F"),
+        (10107, "1A", "3E"), (10108, "1L", "3K"), (10109, "1G", "3I"),
+        (10110, "1D", "3B"), (10111, "1H", "2J"), (10112, "2K", "2L"),
+        (10113, "1B", "3J"), (10114, "2D", "2G"), (10115, "1J", "2H"),
+        (10116, "1K", "3L"),
+    ]
+
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group")).stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+
+    groups = {}
+    for match in group_matches:
+        g = match.get("group", "")
+        groups.setdefault(g, []).append(match)
+
+    users = list(db.collection("users")
+        .where(filter=FieldFilter("role", "==", "player")).stream())
+
+    results = []
+    for user_doc in users:
+        user = user_doc.to_dict()
+        uid = user["uid"]
+
+        pred_docs = db.collection("predictions")\
+            .where(filter=FieldFilter("uid", "==", uid)).stream()
+        predictions = {p.to_dict()["fixture_id"]: p.to_dict() for p in pred_docs}
+
+        # Tablas del usuario
+        group_tables = {g: calculate_group_table(m, predictions) for g, m in groups.items()}
+        classified = {}
+        for group, table in group_tables.items():
+            letter = group.replace("Group ", "")
+            if len(table) >= 1: classified[f"1{letter}"] = table[0]
+            if len(table) >= 2: classified[f"2{letter}"] = table[1]
+            if len(table) >= 3: classified[f"3{letter}"] = table[2]
+
+        # Proyectar bracket R32 y sacar ganadores (los que él cree que van a octavos)
+        bracket = {}
+        for fid, hs, as_ in R32:
+            bracket[fid] = {
+                "home_team": classified.get(hs, _tbd_team(hs)),
+                "away_team": classified.get(as_, _tbd_team(as_)),
+            }
+
+        # Equipos que el usuario proyecta que ganan R32 (llegan a octavos)
+        user_r16_codes = set()
+        for fid, hs, as_ in R32:
+            winner = _get_winner_from_prediction(fid, bracket, predictions)
+            if winner and winner.get("code"):
+                user_r16_codes.add(winner["code"])
+
+        correct = user_r16_codes & REAL_R16_CODES
+        pts = len(correct) * 4
+
+        results.append({
+            "name": user.get("display_name", ""),
+            "correct_teams": len(correct),
+            "r16_points": pts,
+            "total_actual": user.get("total_score", 0),
+            "total_nuevo": user.get("total_score", 0) - user.get("r16_class_pts", 0) + pts,
+        })
+
+    return {
+        "real_r16_count": len(REAL_R16_CODES),
+        "users": sorted(results, key=lambda x: -x["total_nuevo"]),
+    }
