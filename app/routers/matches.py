@@ -1176,6 +1176,80 @@ async def calculate_r16_classification(current_user: dict = Depends(require_admi
         "results": sorted(results, key=lambda x: -x["points"]),
     }
 
+@router.get("/admin/preview-qf-classification")
+async def preview_qf_classification(current_user: dict = Depends(require_admin)):
+    """Preview de puntos de cuartos. NO guarda."""
+    from app.services.bracket_service import (
+        calculate_group_table, _get_winner_from_prediction, _tbd_team
+    )
+    REAL_QF_CODES = {"MAR", "FRA", "ENG", "NOR", "ESP", "BEL", "ARG", "SUI"}
+    R32 = [
+        (10101, "2A", "2B"), (10102, "1C", "2F"), (10103, "1E", "3D"),
+        (10104, "1F", "2C"), (10105, "2E", "2I"), (10106, "1I", "3F"),
+        (10107, "1A", "3E"), (10108, "1L", "3K"), (10109, "1G", "3I"),
+        (10110, "1D", "3B"), (10111, "1H", "2J"), (10112, "2K", "2L"),
+        (10113, "1B", "3J"), (10114, "2D", "2G"), (10115, "1J", "2H"),
+        (10116, "1K", "3L"),
+    ]
+    R16 = [
+        (10201, "W10101", "W10104"), (10202, "W10103", "W10106"),
+        (10203, "W10102", "W10105"), (10204, "W10107", "W10108"),
+        (10205, "W10112", "W10111"), (10206, "W10110", "W10109"),
+        (10207, "W10115", "W10114"), (10208, "W10113", "W10116"),
+    ]
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group")).stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+    groups = {}
+    for match in group_matches:
+        g = match.get("group", "")
+        groups.setdefault(g, []).append(match)
+    users = list(db.collection("users")
+        .where(filter=FieldFilter("role", "==", "player")).stream())
+    results = []
+    for user_doc in users:
+        user = user_doc.to_dict()
+        uid = user["uid"]
+        pred_docs = db.collection("predictions")\
+            .where(filter=FieldFilter("uid", "==", uid)).stream()
+        predictions = {p.to_dict()["fixture_id"]: p.to_dict() for p in pred_docs}
+        group_tables = {g: calculate_group_table(m, predictions) for g, m in groups.items()}
+        classified = {}
+        for group, table in group_tables.items():
+            letter = group.replace("Group ", "")
+            if len(table) >= 1: classified[f"1{letter}"] = table[0]
+            if len(table) >= 2: classified[f"2{letter}"] = table[1]
+            if len(table) >= 3: classified[f"3{letter}"] = table[2]
+        bracket = {}
+        for fid, hs, as_ in R32:
+            bracket[fid] = {
+                "home_team": classified.get(hs, _tbd_team(hs)),
+                "away_team": classified.get(as_, _tbd_team(as_)),
+            }
+        for fid, hs, as_ in R16:
+            hp = int(hs.replace("W", ""))
+            ap = int(as_.replace("W", ""))
+            bracket[fid] = {
+                "home_team": _get_winner_from_prediction(hp, bracket, predictions),
+                "away_team": _get_winner_from_prediction(ap, bracket, predictions),
+            }
+        user_qf_codes = set()
+        for fid, hs, as_ in R16:
+            winner = _get_winner_from_prediction(fid, bracket, predictions)
+            if winner and winner.get("code"):
+                user_qf_codes.add(winner["code"])
+        correct = user_qf_codes & REAL_QF_CODES
+        pts = len(correct) * 6
+        prev = user.get("qf_class_pts", 0)
+        results.append({
+            "name": user.get("display_name", ""),
+            "correct_teams": len(correct),
+            "qf_points": pts,
+            "total_actual": user.get("total_score", 0),
+            "total_nuevo": user.get("total_score", 0) - prev + pts,
+        })
+    return {"users": sorted(results, key=lambda x: -x["total_nuevo"])}
+
 @router.post("/admin/calculate-qf-classification")
 async def calculate_qf_classification(current_user: dict = Depends(require_admin)):
     """Da 6 pts por cada equipo que el usuario proyectó llegaba a cuartos."""
