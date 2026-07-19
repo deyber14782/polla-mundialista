@@ -1884,3 +1884,52 @@ async def preview_top_scorer(current_user: dict = Depends(require_admin)):
         d = doc.to_dict()
         out.append({"uid": d.get("uid"), "player_name": d.get("player_name"), "team_name": d.get("team_name")})
     return {"total": len(out), "predictions": out}
+
+@router.post("/admin/calculate-top-scorer-points")
+async def calculate_top_scorer_points(current_user: dict = Depends(require_admin)):
+    """Da 5 pts a quien acertó el máximo goleador (Mbappé)."""
+    import unicodedata
+
+    def normalize_name(name):
+        if not name:
+            return ""
+        n = name.lower().strip()
+        n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode("ascii")
+        n = n.replace(".", "").replace("-", " ")
+        return " ".join(n.split())
+
+    REAL_SCORER_VARIANTS = {"mbappe", "kylian mbappe", "k mbappe"}
+
+    special_docs = db.collection("special_predictions").stream()
+
+    results = []
+    for doc in special_docs:
+        data = doc.to_dict()
+        uid = data.get("uid")
+        player_name = data.get("player_name", "")
+        normalized = normalize_name(player_name)
+
+        is_correct = normalized in REAL_SCORER_VARIANTS
+        pts = 5 if is_correct else 0
+
+        user_ref = db.collection("users").document(uid)
+        user_doc = user_ref.get()
+        if not user_doc.exists:
+            continue
+        user = user_doc.to_dict()
+
+        prev = data.get("points", 0) or 0
+        new_total = user.get("total_score", 0) - prev + pts
+
+        doc.reference.update({"points": pts, "processed": True})
+        user_ref.update({"total_score": new_total})
+
+        results.append({
+            "name": user.get("display_name", ""),
+            "predicted": player_name,
+            "correct": is_correct,
+            "points": pts,
+        })
+
+    cache.invalidate("ranking")
+    return {"users_processed": len(results), "results": sorted(results, key=lambda x: -x["points"])}
