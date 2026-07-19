@@ -1537,7 +1537,9 @@ async def calculate_final_classification(current_user: dict = Depends(require_ad
 
 @router.post("/admin/calculate-final-positions")
 async def calculate_final_positions(current_user: dict = Depends(require_admin)):
-    """Da puntos por Campeón(12), Subcampeón(10), 3er puesto(8), 4to puesto(6)."""
+    """Da puntos por Campeón(12), Subcampeón(10), 3er puesto(8), 4to puesto(6).
+    Se compara el equipo predicho por el usuario contra el resultado real,
+    SIN importar si acertó también el rival."""
     from app.services.bracket_service import calculate_group_table, _get_winner_from_prediction, _tbd_team
 
     REAL = {
@@ -1609,11 +1611,21 @@ async def calculate_final_positions(current_user: dict = Depends(require_admin))
                     "home_team": _get_winner_from_prediction(hp, bracket, predictions),
                     "away_team": _get_winner_from_prediction(ap, bracket, predictions),
                 }
+        # Construir la Final (10601) y Tercer puesto (10501) con los ganadores/perdedores de semis
+        bracket[10601] = {
+            "home_team": _get_winner_from_prediction(10401, bracket, predictions),
+            "away_team": _get_winner_from_prediction(10402, bracket, predictions),
+        }
+        from app.services.bracket_service import _get_loser_from_prediction
+        bracket[10501] = {
+            "home_team": _get_loser_from_prediction(10401, bracket, predictions),
+            "away_team": _get_loser_from_prediction(10402, bracket, predictions),
+        }
 
-        # Predicción del usuario para Final (10601) y Tercer puesto (10501)
         pts = 0
         detail = []
 
+        # ── Final: Campeón y Subcampeón (según el marcador que predijo en 10601) ──
         final_pred = predictions.get(10601)
         final_match = bracket.get(10601, {})
         if final_pred and final_match:
@@ -1637,6 +1649,7 @@ async def calculate_final_positions(current_user: dict = Depends(require_admin))
                 pts += 10
                 detail.append("runner_up")
 
+        # ── Tercer puesto: 3° y 4° (según el marcador que predijo en 10501) ──
         third_pred = predictions.get(10501)
         third_match = bracket.get(10501, {})
         if third_pred and third_match:
