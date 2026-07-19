@@ -1713,6 +1713,12 @@ async def debug_projected_finalists(current_user: dict = Depends(require_admin))
             for fid,hs,as_ in rl:
                 hp,ap = int(hs.replace("W","")), int(as_.replace("W",""))
                 bracket[fid] = {"home_team": _get_winner_from_prediction(hp,bracket,preds), "away_team": _get_winner_from_prediction(ap,bracket,preds)}
+        
+        bracket[10601] = {
+            "home_team": _get_winner_from_prediction(10401, bracket, preds),
+            "away_team": _get_winner_from_prediction(10402, bracket, preds),
+        }
+        
         finalists = [bracket[10601]["home_team"]["name"], bracket[10601]["away_team"]["name"]]
         out.append({"name": user.get("display_name",""), "finalists": finalists})
     return {"users": out}
