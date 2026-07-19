@@ -1875,3 +1875,12 @@ async def debug_third_calc(current_user: dict = Depends(require_admin)):
             "predicted_score": pred_info,
         })
     return {"users": out}
+
+@router.get("/admin/preview-top-scorer")
+async def preview_top_scorer(current_user: dict = Depends(require_admin)):
+    docs = db.collection("special_predictions").stream()
+    out = []
+    for doc in docs:
+        d = doc.to_dict()
+        out.append({"uid": d.get("uid"), "player_name": d.get("player_name"), "team_name": d.get("team_name")})
+    return {"total": len(out), "predictions": out}
