@@ -1534,3 +1534,137 @@ async def calculate_final_classification(current_user: dict = Depends(require_ad
 
     cache.invalidate("ranking")
     return {"users_processed": len(results), "results": sorted(results, key=lambda x: -x["points"])}
+
+@router.post("/admin/calculate-final-positions")
+async def calculate_final_positions(current_user: dict = Depends(require_admin)):
+    """Da puntos por Campeón(12), Subcampeón(10), 3er puesto(8), 4to puesto(6)."""
+    from app.services.bracket_service import calculate_group_table, _get_winner_from_prediction, _tbd_team
+
+    REAL = {
+        "champion": "ESP",
+        "runner_up": "ARG",
+        "third": "ENG",
+        "fourth": "FRA",
+    }
+
+    R32 = [
+        (10101, "2A", "2B"), (10102, "1C", "2F"), (10103, "1E", "3D"),
+        (10104, "1F", "2C"), (10105, "2E", "2I"), (10106, "1I", "3F"),
+        (10107, "1A", "3E"), (10108, "1L", "3K"), (10109, "1G", "3I"),
+        (10110, "1D", "3B"), (10111, "1H", "2J"), (10112, "2K", "2L"),
+        (10113, "1B", "3J"), (10114, "2D", "2G"), (10115, "1J", "2H"),
+        (10116, "1K", "3L"),
+    ]
+    R16 = [
+        (10201, "W10101", "W10104"), (10202, "W10103", "W10106"),
+        (10203, "W10102", "W10105"), (10204, "W10107", "W10108"),
+        (10205, "W10112", "W10111"), (10206, "W10110", "W10109"),
+        (10207, "W10115", "W10114"), (10208, "W10113", "W10116"),
+    ]
+    QF = [
+        (10301, "W10201", "W10202"), (10302, "W10203", "W10204"),
+        (10303, "W10205", "W10206"), (10304, "W10207", "W10208"),
+    ]
+    SF = [
+        (10401, "W10301", "W10302"), (10402, "W10303", "W10304"),
+    ]
+
+    group_docs = db.collection("matches")\
+        .where(filter=FieldFilter("phase", "==", "group")).stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+    groups = {}
+    for match in group_matches:
+        g = match.get("group", "")
+        groups.setdefault(g, []).append(match)
+
+    users = list(db.collection("users")
+        .where(filter=FieldFilter("role", "==", "player")).stream())
+
+    results = []
+    for user_doc in users:
+        user = user_doc.to_dict()
+        uid = user["uid"]
+        pred_docs = db.collection("predictions")\
+            .where(filter=FieldFilter("uid", "==", uid)).stream()
+        predictions = {p.to_dict()["fixture_id"]: p.to_dict() for p in pred_docs}
+
+        group_tables = {g: calculate_group_table(m, predictions) for g, m in groups.items()}
+        classified = {}
+        for group, table in group_tables.items():
+            letter = group.replace("Group ", "")
+            if len(table) >= 1: classified[f"1{letter}"] = table[0]
+            if len(table) >= 2: classified[f"2{letter}"] = table[1]
+            if len(table) >= 3: classified[f"3{letter}"] = table[2]
+
+        bracket = {}
+        for fid, hs, as_ in R32:
+            bracket[fid] = {
+                "home_team": classified.get(hs, _tbd_team(hs)),
+                "away_team": classified.get(as_, _tbd_team(as_)),
+            }
+        for round_list in [R16, QF, SF]:
+            for fid, hs, as_ in round_list:
+                hp, ap = int(hs.replace("W","")), int(as_.replace("W",""))
+                bracket[fid] = {
+                    "home_team": _get_winner_from_prediction(hp, bracket, predictions),
+                    "away_team": _get_winner_from_prediction(ap, bracket, predictions),
+                }
+
+        # Predicción del usuario para Final (10601) y Tercer puesto (10501)
+        pts = 0
+        detail = []
+
+        final_pred = predictions.get(10601)
+        final_match = bracket.get(10601, {})
+        if final_pred and final_match:
+            hg, ag = final_pred.get("predicted_home", 0), final_pred.get("predicted_away", 0)
+            home_code = final_match.get("home_team", {}).get("code")
+            away_code = final_match.get("away_team", {}).get("code")
+
+            if hg > ag:
+                pred_champion, pred_runner = home_code, away_code
+            elif hg < ag:
+                pred_champion, pred_runner = away_code, home_code
+            else:
+                pw = final_pred.get("penalty_winner", "home")
+                pred_champion = home_code if pw == "home" else away_code
+                pred_runner = away_code if pw == "home" else home_code
+
+            if pred_champion == REAL["champion"]:
+                pts += 12
+                detail.append("champion")
+            if pred_runner == REAL["runner_up"]:
+                pts += 10
+                detail.append("runner_up")
+
+        third_pred = predictions.get(10501)
+        third_match = bracket.get(10501, {})
+        if third_pred and third_match:
+            hg, ag = third_pred.get("predicted_home", 0), third_pred.get("predicted_away", 0)
+            home_code = third_match.get("home_team", {}).get("code")
+            away_code = third_match.get("away_team", {}).get("code")
+
+            if hg > ag:
+                pred_third, pred_fourth = home_code, away_code
+            elif hg < ag:
+                pred_third, pred_fourth = away_code, home_code
+            else:
+                pw = third_pred.get("penalty_winner", "home")
+                pred_third = home_code if pw == "home" else away_code
+                pred_fourth = away_code if pw == "home" else home_code
+
+            if pred_third == REAL["third"]:
+                pts += 8
+                detail.append("third")
+            if pred_fourth == REAL["fourth"]:
+                pts += 6
+                detail.append("fourth")
+
+        prev = user.get("final_pos_pts", 0)
+        new_total = user.get("total_score", 0) - prev + pts
+        user_doc.reference.update({"final_pos_pts": pts, "total_score": new_total})
+
+        results.append({"name": user.get("display_name",""), "points": pts, "detail": detail})
+
+    cache.invalidate("ranking")
+    return {"users_processed": len(results), "results": sorted(results, key=lambda x: -x["points"])}
