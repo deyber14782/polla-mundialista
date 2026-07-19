@@ -1805,3 +1805,73 @@ async def debug_final_calc(current_user: dict = Depends(require_admin)):
             "predicted_score": pred_info,
         })
     return {"users": out}
+
+@router.get("/admin/debug-third-calc")
+async def debug_third_calc(current_user: dict = Depends(require_admin)):
+    from app.services.bracket_service import calculate_group_table, _get_winner_from_prediction, _get_loser_from_prediction, _tbd_team
+
+    R32 = [
+        (10101, "2A", "2B"), (10102, "1C", "2F"), (10103, "1E", "3D"),
+        (10104, "1F", "2C"), (10105, "2E", "2I"), (10106, "1I", "3F"),
+        (10107, "1A", "3E"), (10108, "1L", "3K"), (10109, "1G", "3I"),
+        (10110, "1D", "3B"), (10111, "1H", "2J"), (10112, "2K", "2L"),
+        (10113, "1B", "3J"), (10114, "2D", "2G"), (10115, "1J", "2H"),
+        (10116, "1K", "3L"),
+    ]
+    R16 = [(10201,"W10101","W10104"),(10202,"W10103","W10106"),(10203,"W10102","W10105"),
+           (10204,"W10107","W10108"),(10205,"W10112","W10111"),(10206,"W10110","W10109"),
+           (10207,"W10115","W10114"),(10208,"W10113","W10116")]
+    QF = [(10301,"W10201","W10202"),(10302,"W10203","W10204"),(10303,"W10205","W10206"),(10304,"W10207","W10208")]
+    SF = [(10401,"W10301","W10302"),(10402,"W10303","W10304")]
+
+    group_docs = db.collection("matches").where(filter=FieldFilter("phase","==","group")).stream()
+    group_matches = [doc.to_dict() for doc in group_docs]
+    groups = {}
+    for m in group_matches:
+        groups.setdefault(m.get("group",""), []).append(m)
+
+    users = list(db.collection("users").where(filter=FieldFilter("role","==","player")).stream())
+    out = []
+    for user_doc in users:
+        user = user_doc.to_dict()
+        uid = user["uid"]
+        preds = {p.to_dict()["fixture_id"]: p.to_dict() for p in db.collection("predictions").where(filter=FieldFilter("uid","==",uid)).stream()}
+        gt = {g: calculate_group_table(m, preds) for g,m in groups.items()}
+        classified = {}
+        for g, table in gt.items():
+            letter = g.replace("Group ","")
+            if len(table)>=1: classified[f"1{letter}"]=table[0]
+            if len(table)>=2: classified[f"2{letter}"]=table[1]
+            if len(table)>=3: classified[f"3{letter}"]=table[2]
+        bracket = {}
+        for fid,hs,as_ in R32:
+            bracket[fid] = {"home_team": classified.get(hs, _tbd_team(hs)), "away_team": classified.get(as_, _tbd_team(as_))}
+        for rl in [R16,QF,SF]:
+            for fid,hs,as_ in rl:
+                hp,ap = int(hs.replace("W","")), int(as_.replace("W",""))
+                bracket[fid] = {"home_team": _get_winner_from_prediction(hp,bracket,preds), "away_team": _get_winner_from_prediction(ap,bracket,preds)}
+
+        bracket[10501] = {
+            "home_team": _get_loser_from_prediction(10401, bracket, preds),
+            "away_team": _get_loser_from_prediction(10402, bracket, preds),
+        }
+
+        third_match = bracket[10501]
+        third_pred = preds.get(10501)
+
+        home_code = third_match["home_team"].get("code")
+        away_code = third_match["away_team"].get("code")
+        home_name = third_match["home_team"].get("name")
+        away_name = third_match["away_team"].get("name")
+
+        pred_info = "sin predicción"
+        if third_pred:
+            hg, ag = third_pred.get("predicted_home"), third_pred.get("predicted_away")
+            pred_info = f"{hg}-{ag}"
+
+        out.append({
+            "name": user.get("display_name",""),
+            "third_place_match": f"{home_name}({home_code}) vs {away_name}({away_code})",
+            "predicted_score": pred_info,
+        })
+    return {"users": out}
